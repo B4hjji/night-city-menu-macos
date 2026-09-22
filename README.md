@@ -161,4 +161,3 @@ Cyberpunk 2077 is a trademark of CD PROJEKT S.A. This project is unofficial and 
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
