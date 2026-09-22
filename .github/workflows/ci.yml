@@ -18,4 +18,4 @@ jobs:
       - name: Validate and build overlay
         env:
           NCC_BUILD_OVERLAY: "1"
-        run: ./tools/check.sh
+        run: bash ./tools/check.sh

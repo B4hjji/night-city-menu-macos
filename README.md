@@ -85,25 +85,25 @@ git clone https://github.com/B4hjji/night-city-menu-macos.git
 cd night-city-menu-macos
 
 # Copies Frida Gadget from a known local installation when available.
-./tools/fetch-deps.sh
+bash ./tools/fetch-deps.sh
 
 # Builds an ad-hoc-signed app in build/.
-./launcher/build-app.sh
+bash ./launcher/build-app.sh
 
 # Or build and run the launcher directly.
-CP2077_DIR="/path/to/folder-containing-Cyberpunk2077.app" ./dev/launch.sh
+CP2077_DIR="/path/to/folder-containing-Cyberpunk2077.app" bash ./dev/launch.sh
 ```
 
 If Frida Gadget is elsewhere:
 
 ```bash
-FRIDA_GADGET_SOURCE="/absolute/path/FridaGadget.dylib" ./tools/fetch-deps.sh
+FRIDA_GADGET_SOURCE="/absolute/path/FridaGadget.dylib" bash ./tools/fetch-deps.sh
 ```
 
 Set the final repository URL while building to enable in-app source links and release checks:
 
 ```bash
-NCC_REPOSITORY_URL="https://github.com/B4hjji/night-city-menu-macos" ./launcher/build-app.sh
+NCC_REPOSITORY_URL="https://github.com/B4hjji/night-city-menu-macos" bash ./launcher/build-app.sh
 ```
 
 Dear ImGui and PUC-Lua are fetched and built on the first overlay build. Generated dependencies and binaries stay ignored by Git; their licenses and the Frida notice are bundled into every app.
@@ -116,7 +116,7 @@ Signed distribution requires an Apple Developer ID and a `notarytool` keychain p
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 NOTARY_PROFILE="night-city-menu-notary" \
 NCC_REPOSITORY_URL="https://github.com/B4hjji/night-city-menu-macos" \
-./tools/sign-notarize.sh
+bash ./tools/sign-notarize.sh
 ```
 
 The script signs nested code, notarizes and staples the app, then creates `.zip` and `.dmg` artifacts in `dist/`. See [the release guide](docs/RELEASING.md) before publishing.

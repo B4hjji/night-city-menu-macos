@@ -23,7 +23,7 @@ Pages unless the repository gains a maintained website.
 3. Run the validation suite:
 
    ```bash
-   NCC_BUILD_OVERLAY=1 ./tools/check.sh
+   NCC_BUILD_OVERLAY=1 bash ./tools/check.sh
    ```
 
 4. Test Install, Play, the `<` and F1 toggles, one item command, `speed 2`, `speed off`, `fly 60`, and Esc.
@@ -35,7 +35,7 @@ Pages unless the repository gains a maintained website.
    SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
    NOTARY_PROFILE="night-city-menu-notary" \
    NCC_REPOSITORY_URL="https://github.com/B4hjji/night-city-menu-macos" \
-   ./tools/sign-notarize.sh
+   bash ./tools/sign-notarize.sh
    ```
 
 8. Test the stapled `.dmg` on a separate macOS user account or clean Mac when possible.

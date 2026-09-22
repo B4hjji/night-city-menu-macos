@@ -52,7 +52,7 @@ decompress it, and place it at:
 
 You can also point this script at an existing copy:
 
-  FRIDA_GADGET_SOURCE=/absolute/path/FridaGadget.dylib ./tools/fetch-deps.sh
+  FRIDA_GADGET_SOURCE=/absolute/path/FridaGadget.dylib bash ./tools/fetch-deps.sh
 
 Official releases: https://github.com/frida/frida/releases
 EOF

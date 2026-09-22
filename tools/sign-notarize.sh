@@ -9,7 +9,7 @@
 #   SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 #   NOTARY_PROFILE="night-city-menu-notary" \
 #   NCC_REPOSITORY_URL="https://github.com/B4hjji/night-city-menu-macos" \
-#   ./tools/sign-notarize.sh
+#   bash ./tools/sign-notarize.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -32,7 +32,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> Building app"
-"$ROOT/launcher/build-app.sh"
+bash "$ROOT/launcher/build-app.sh"
 
 echo "==> Signing nested Mach-O files"
 while IFS= read -r file; do

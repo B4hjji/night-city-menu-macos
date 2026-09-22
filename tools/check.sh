@@ -27,7 +27,7 @@ osascript -l JavaScript -e \
 
 if [[ "${NCC_BUILD_OVERLAY:-0}" == "1" ]]; then
   echo "==> Native overlay build"
-  ./overlay/build.sh
+  bash ./overlay/build.sh
 fi
 
 echo "==> Repository hygiene"

@@ -20,7 +20,7 @@ done
 
 if [[ ! -f "$FRIDA_GADGET" ]]; then
   echo "error: Frida Gadget was not found at: $FRIDA_GADGET" >&2
-  echo "Run ./tools/fetch-deps.sh, or set FRIDA_GADGET=/absolute/path/FridaGadget.dylib." >&2
+  echo "Run bash ./tools/fetch-deps.sh, or set FRIDA_GADGET=/absolute/path/FridaGadget.dylib." >&2
   exit 1
 fi
 if ! file "$FRIDA_GADGET" | grep -q 'arm64'; then
@@ -29,7 +29,7 @@ if ! file "$FRIDA_GADGET" | grep -q 'arm64'; then
 fi
 
 echo "==> Building overlay"
-"$ROOT/overlay/build.sh"
+bash "$ROOT/overlay/build.sh"
 
 echo "==> Assembling $APP_NAME"
 rm -rf "$APP"

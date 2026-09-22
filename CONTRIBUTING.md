@@ -27,12 +27,12 @@ Include:
 ## Development setup
 
 ```bash
-./tools/fetch-deps.sh
-./launcher/build-app.sh
-./tools/check.sh
+bash ./tools/fetch-deps.sh
+bash ./launcher/build-app.sh
+bash ./tools/check.sh
 ```
 
-Use `CP2077_DIR=/path/to/game-root ./dev/launch.sh` for a nonstandard installation. The path must contain
+Use `CP2077_DIR=/path/to/game-root bash ./dev/launch.sh` for a nonstandard installation. The path must contain
 `Cyberpunk2077.app`.
 
 ## Pull requests
@@ -41,7 +41,7 @@ Use `CP2077_DIR=/path/to/game-root ./dev/launch.sh` for a nonstandard installati
 - Do not enable legacy Steam hooks in the App Store profile.
 - Keep speed and flight changes session-only unless a proposal explicitly documents save migration and rollback.
 - Update user-facing documentation for new commands, controls, dependencies, or compatibility changes.
-- Run `./tools/check.sh`; use `NCC_BUILD_OVERLAY=1 ./tools/check.sh` after native overlay changes.
+- Run `bash ./tools/check.sh`; use `NCC_BUILD_OVERLAY=1 bash ./tools/check.sh` after native overlay changes.
 - Preserve upstream attribution and third-party notices.
 
 Small, focused pull requests are easier to review and test safely.

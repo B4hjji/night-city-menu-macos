@@ -175,7 +175,7 @@ reproduce Gatekeeper behavior.
 ```bash
 SIGN_IDENTITY="Developer ID Application: NAME (TEAMID)" \
 NOTARY_PROFILE="cyberconsole-notary" \
-./tools/sign-notarize.sh
+bash ./tools/sign-notarize.sh
 ```
 
 To adapt it to another app: change `APP`, `DMG`, `ZIP`, and the volume name; drop the `nctool` entitlements

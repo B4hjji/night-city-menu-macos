@@ -6,5 +6,5 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/build/Night City Menu 2.3.3.app"
 
-"$ROOT/launcher/build-app.sh"
+bash "$ROOT/launcher/build-app.sh"
 exec "$APP/Contents/MacOS/NightCityConsole"
