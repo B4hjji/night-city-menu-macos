@@ -10,6 +10,15 @@
 
 'use strict';
 
+// App Store 2.3.3 command-console port. These offsets were matched against the
+// exact arm64 executable with SHA-256
+// 307f437db1e350b07404c9dbc16f69860ad5304444849060cc348d5e3663259e.
+// Keep this build command-only: the archive/Codeware diagnostics below still
+// contain Steam 2.3.1 addresses and must never be installed into 2.3.3 code.
+const NCC_COMMAND_ONLY_233 = true;
+const NCC_SCRIPT_EXECUTOR_OFFSET = 0x434E444;
+const NCC_RTTI_GET_OFFSET = 0x4363898;
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -528,7 +537,11 @@ function installHooks() {
 // Entry Point
 // ============================================================================
 
-installHooks();
+if (!NCC_COMMAND_ONLY_233) {
+    installHooks();
+} else {
+    logInfo('Cyberpunk 2077 App Store 2.3.3 profile active; legacy 2.3.1 hooks disabled');
+}
 
 // Export for external access
 rpc.exports = {
@@ -566,10 +579,10 @@ rpc.exports = {
           T_F32='0xb64f4a0accc8a8c5',T_BOOL='0xf7bdd5a7c820889d',T_CNAME='0xa5e23de2a2657af9',T_TDB='0x4072151ff3dcf7bc',T_ITEM='0xd15b2274885d7f7d';
     const PLAYER='0xcebecae898e55b86';
     try {
-        const base=getModuleBase(); const execAddr=base.add(0x2173120);
+        const base=getModuleBase(); const execAddr=base.add(NCC_SCRIPT_EXECUTOR_OFFSET);
         const Exec=new NativeFunction(execAddr,'uint64',['pointer','pointer','pointer','pointer','pointer']);
         let reg=null,GetClass=null,GetEnum=null;
-        function ensureReg(){ if(reg) return; reg=new NativeFunction(base.add(0x2188e8c),'pointer',[])(); const rv=reg.readPointer();
+        function ensureReg(){ if(reg) return; reg=new NativeFunction(base.add(NCC_RTTI_GET_OFFSET),'pointer',[])(); const rv=reg.readPointer();
             GetClass=new NativeFunction(rv.add(0x10).readPointer(),'pointer',['pointer','uint64']);
             GetEnum =new NativeFunction(rv.add(0x18).readPointer(),'pointer',['pointer','uint64']); }
         let player=null, playerVt=null, fromtd=null, depth=0, busy=false, lastCmd='', lastLReq=''; const pendingQ=[];
@@ -833,6 +846,67 @@ rpc.exports = {
             else { const e=resolveAny(['gameTimeSystem'],'UnsetTimeDilation'); if(!e){ log('slowmo: UnsetTimeDilation not found'); return; }
                 try{ callFunc(e.fn, ts, e.retType, ['NightCityConsole']); log('*** slowmo OFF ***'); }catch(ex){ log('slowmo err: '+ex); } }
         }
+        // Session-only movement-speed multiplier. The game exposes MaxSpeed as a stat, but its
+        // modifier API is additive. Capture the unmodified value once and add only the delta needed
+        // for the requested multiplier. Applying the inverse delta restores exactly what this menu
+        // added without touching cyberware/perk modifiers from the save.
+        const speedState={base:null, delta:0, factor:1};
+        function speedContext(){
+            const gi=getGI(); if(!gi) throw 'no GameInstance';
+            const p=authPlayer(gi); if(!p) throw 'no player';
+            const ss=getSystemFlexible(gi,'gameStatsSystem','GetStatsSystem'); if(!ss) throw 'StatsSystem not reachable';
+            const geid=resolveAny(['gameObject','gameEntity'],'GetEntityID'); if(!geid) throw 'GetEntityID not found';
+            return {p:p,ss:ss,eid:callFunc(geid.fn,p,geid.retType,[])};
+        }
+        function addMaxSpeedDelta(sc, delta){
+            if(Math.abs(delta)<0.0001) return;
+            const add=resolveAny(['gameStatsSystem'],'AddModifier');
+            if(!add) throw 'gameStatsSystem.AddModifier not found';
+            // CET's RPGManager.CreateStatModifier helper is not exported through the native macOS
+            // RTTI registry. Build its concrete payload ourselves from the live reflected fields.
+            const mod=createInstance('gameConstantStatModifierData');
+            if(!mod) throw 'could not allocate gameConstantStatModifierData';
+            const st=findProp('gameConstantStatModifierData','statType');
+            const mt=findProp('gameConstantStatModifierData','modifierType');
+            const vl=findProp('gameConstantStatModifierData','value');
+            if(!st||!mt||!vl) throw 'stat modifier field layout unavailable';
+            const statValue=resolveEnumByTypeHash(st.typeName,'MaxSpeed');
+            const modifierValue=resolveEnumByTypeHash(mt.typeName,'Additive');
+            if(statValue===null||modifierValue===null) throw 'MaxSpeed/Additive enum unavailable';
+            mod.add(st.off).writeU32(statValue.toNumber()>>>0);
+            mod.add(mt.off).writeU32(modifierValue.toNumber()>>>0);
+            mod.add(vl.off).writeFloat(delta);
+            callFunc(add.fn, sc.ss, add.retType, [{raw:sc.eid,n:8},'@'+mod]);
+        }
+        function doSpeed(arg){
+            try{
+                const sc=speedContext();
+                const get=resolveAny(['gameStatsSystem'],'GetStatValue');
+                if(!get) throw 'gameStatsSystem.GetStatValue not found';
+                if(speedState.base===null){
+                    const current=callFunc(get.fn,sc.ss,get.retType,[{raw:sc.eid,n:8},'MaxSpeed']).readFloat();
+                    if(!isFinite(current)||current<=0) throw 'invalid MaxSpeed value '+current;
+                    speedState.base=current;
+                }
+                // Remove our previous delta first, then apply the replacement. These are temporary
+                // AddModifier entries; their net contribution is zero after `speed off`.
+                if(Math.abs(speedState.delta)>=0.0001) addMaxSpeedDelta(sc,-speedState.delta);
+                speedState.delta=0; speedState.factor=1;
+                if(arg==='off'||arg==='normal'||arg==='1'||arg===undefined){
+                    log('*** movement speed NORMAL ('+speedState.base.toFixed(2)+') ***');
+                    speedState.base=null;
+                    return;
+                }
+                let factor=(arg==='max')?5:parseFloat(arg);
+                if(!isFinite(factor)){ log('usage: speed <0.25-10|max|off>'); return; }
+                factor=Math.max(0.25,Math.min(10,factor));
+                speedState.delta=speedState.base*(factor-1);
+                addMaxSpeedDelta(sc,speedState.delta);
+                speedState.factor=factor;
+                const actual=callFunc(get.fn,sc.ss,get.retType,[{raw:sc.eid,n:8},'MaxSpeed']).readFloat();
+                log('*** movement speed '+factor.toFixed(2)+'x (MaxSpeed '+actual.toFixed(2)+') ***');
+            }catch(ex){ log('speed err: '+ex); }
+        }
         function doNoPolice(on){
             const gi=getGI(); if(!gi){ log('nopolice: no gi'); return; }
             const p=authPlayer(gi); if(!p){ log('nopolice: no player'); return; }
@@ -879,6 +953,85 @@ rpc.exports = {
             try{ callFunc(tp.fn, fac, tp.retType, ['@'+p, {raw:dst,n:16}, {raw:rot,n:12}]);
                 log('*** teleported to '+dst.readFloat().toFixed(1)+','+dst.add(4).readFloat().toFixed(1)+','+dst.add(8).readFloat().toFixed(1)+' ***'); }
             catch(e){ log('teleport err: '+e); }
+        }
+        // Temporary free-flight. The native overlay owns the keyboard state; this game-thread tick
+        // reads it through three tiny exported C functions, then moves the player camera-relative via
+        // the same Teleport RTTI call used by the regular teleport command. Flight is deliberately
+        // session-only, time-limited, and always removes its gameplay restrictions on exit.
+        const FL_FWD=1,FL_BACK=2,FL_LEFT=4,FL_RIGHT=8,FL_UP=16,FL_DOWN=32,FL_BOOST=64;
+        const flightState={active:false,endsAt:0,lastTick:0,speed:12,ctx:null,input:null,setActive:null,stopRequested:null};
+        function flightBridge(){
+            if(flightState.input&&flightState.setActive&&flightState.stopRequested) return true;
+            try{
+                const ip=resolveExport('nccFlightInputMask'), sp=resolveExport('nccSetFlightActive'), xp=resolveExport('nccConsumeFlightStopRequest');
+                if(!ip||!sp||!xp) return false;
+                flightState.input=new NativeFunction(ip,'uint32',[]);
+                flightState.setActive=new NativeFunction(sp,'void',['uint32']);
+                flightState.stopRequested=new NativeFunction(xp,'uint32',[]);
+                return true;
+            }catch(e){ log('flight bridge err: '+e); return false; }
+        }
+        function stopFlight(reason){
+            if(!flightState.active) return;
+            flightState.active=false; flightState.ctx=null; flightState.lastTick=0;
+            try{ statusApply(false,'GameplayRestriction.NoMovement'); }catch(e){}
+            try{ statusApply(false,'GameplayRestriction.NoZooming'); }catch(e){}
+            try{ statusApply(false,'GameplayRestriction.NoCombat'); }catch(e){}
+            try{ if(flightBridge()) flightState.setActive(0); }catch(e){}
+            log('*** flight OFF'+(reason?' ('+reason+')':'')+' ***');
+        }
+        function doFlight(arg){
+            if(arg==='off'||arg==='stop'||arg==='0'){ stopFlight('manual'); return; }
+            if(!flightBridge()){ log('flight: overlay input bridge not found'); return; }
+            try{
+                const gi=getGI(); if(!gi) throw 'no GameInstance';
+                const p=authPlayer(gi); if(!p) throw 'no player';
+                const fac=getViaGetter(gi,'GetTeleportationFacility'); if(!fac) throw 'TeleportationFacility not reachable';
+                const cam=getViaGetter(gi,'GetCameraSystem'); if(!cam) throw 'CameraSystem not reachable';
+                const pos=resolveAny(['gameObject','gameEntity'],'GetWorldPosition');
+                const yaw=resolveAny(['gameObject','gameEntity'],'GetWorldYaw');
+                const fwd=resolveAny(['gameCameraSystem'],'GetActiveCameraForward');
+                const right=resolveAny(['gameCameraSystem'],'GetActiveCameraRight');
+                const tp=resolveAny(['gameTeleportationFacility'],'Teleport');
+                if(!pos||!yaw||!fwd||!right||!tp) throw 'one or more flight RTTI methods are unavailable';
+                let secs=parseInt(arg||'60',10); if(!isFinite(secs)) secs=60; secs=Math.max(10,Math.min(300,secs));
+                flightState.ctx={gi:gi,p:p,fac:fac,cam:cam,pos:pos,yaw:yaw,fwd:fwd,right:right,tp:tp};
+                flightState.endsAt=Date.now()+secs*1000; flightState.lastTick=Date.now(); flightState.active=true;
+                statusApply(true,'GameplayRestriction.NoMovement');
+                statusApply(true,'GameplayRestriction.NoZooming');
+                statusApply(true,'GameplayRestriction.NoCombat');
+                flightState.setActive(1);
+                log('*** flight ON for '+secs+'s | WASD move, Space up, Ctrl down, Shift boost, Esc stop ***');
+            }catch(ex){ stopFlight('setup failed'); log('flight err: '+ex); }
+        }
+        function flightTick(){
+            if(!flightState.active) return;
+            const now=Date.now();
+            if(now>=flightState.endsAt){ stopFlight('timer finished'); return; }
+            if(now-flightState.lastTick<16) return;
+            if(flightState.stopRequested&&flightState.stopRequested()){ stopFlight('Esc'); return; }
+            const dt=Math.min(0.05,(now-flightState.lastTick)/1000); flightState.lastTick=now;
+            const c=flightState.ctx; if(!c){ stopFlight('lost context'); return; }
+            try{
+                const mask=flightState.input();
+                const cur=callFunc(c.pos.fn,c.p,c.pos.retType,[]);
+                const fv=callFunc(c.fwd.fn,c.cam,c.fwd.retType,[]);
+                const rv=callFunc(c.right.fn,c.cam,c.right.retType,[]);
+                let x=cur.readFloat(),y=cur.add(4).readFloat(),z=cur.add(8).readFloat();
+                let moveF=((mask&FL_FWD)?1:0)-((mask&FL_BACK)?1:0);
+                let moveR=((mask&FL_RIGHT)?1:0)-((mask&FL_LEFT)?1:0);
+                let moveU=((mask&FL_UP)?1:0)-((mask&FL_DOWN)?1:0);
+                const mag=Math.sqrt(moveF*moveF+moveR*moveR+moveU*moveU)||1;
+                moveF/=mag; moveR/=mag; moveU/=mag;
+                const d=flightState.speed*((mask&FL_BOOST)?3:1)*dt;
+                x+=(fv.readFloat()*moveF+rv.readFloat()*moveR)*d;
+                y+=(fv.add(4).readFloat()*moveF+rv.add(4).readFloat()*moveR)*d;
+                z+=(fv.add(8).readFloat()*moveF+rv.add(8).readFloat()*moveR+moveU)*d;
+                const dst=Memory.alloc(16); Memory.copy(dst,cur,16); dst.writeFloat(x); dst.add(4).writeFloat(y); dst.add(8).writeFloat(z);
+                const rot=Memory.alloc(16); rot.writeU64(0); rot.add(8).writeU64(0);
+                const yr=callFunc(c.yaw.fn,c.p,c.yaw.retType,[]).readFloat(); rot.add(8).writeFloat(yr);
+                callFunc(c.tp.fn,c.fac,c.tp.retType,['@'+c.p,{raw:dst,n:16},{raw:rot,n:12}]);
+            }catch(ex){ stopFlight('movement failed'); log('flight tick err: '+ex); }
         }
         // get a system from the scriptable container OR via a static GameInstance.GetXxx(gi) getter
         function getSystemFlexible(gi, scriptName, getterName){
@@ -1062,6 +1215,8 @@ rpc.exports = {
             if(t[0]==='infammo'||t[0]==='ammo'){ doInfammo(t[1]!=='off'); return; }
             if(t[0]==='time'&&t[1]){ doTime(Math.max(0,Math.min(23,parseInt(t[1])||0)), Math.max(0,Math.min(59,parseInt(t[2]||'0')||0))); return; }
             if(t[0]==='slowmo'){ if(t[1]==='off') doSlowmo(false); else doSlowmo(true, parseFloat(t[1])||0.3); return; }
+            if(t[0]==='speed'){ doSpeed(t[1]); return; }
+            if(t[0]==='fly'||t[0]==='flight'){ doFlight(t[1]); return; }
             if(t[0]==='nopolice'||t[0]==='police'){ doNoPolice(t[1]!=='off'); return; }
             if((t[0]==='removeitem'||t[0]==='remove')&&t[1]){ doRemove(t[1], Math.max(1,parseInt(t[2]||'1')||1)); return; }
             if(t[0]==='heal'){ doHeal(); return; }
@@ -1101,7 +1256,7 @@ rpc.exports = {
         // The real shutdown crash is in the game's own teardown (a stale hook/trampoline call), which runs
         // AFTER the save is flushed but BEFORE exit(). So when Main() returns (game quitting, save done),
         // _exit(0) immediately - we never reach the crashing teardown. (Main is at base+0x31e18 on 2.3.1.)
-        try{ const xP2=resolveExport('_exit');
+        try{ const xP2=NCC_COMMAND_ONLY_233 ? null : resolveExport('_exit');
             if(xP2){ const _x2=new NativeFunction(xP2,'void',['int']);
                 Interceptor.attach(base.add(0x31e18), { onLeave:function(){ try{ clearFile(CMD); }catch(e){} _x2(0); } });
                 log('shutdown-exit hook installed (Main+0x31e18)'); }
@@ -1124,7 +1279,10 @@ rpc.exports = {
                     if(meta.isNull()) return; const fv=meta.sub(base).add(FV0).toString(16); instReg[fv]=ctx;
                     if(nameOf(meta)===PLAYER){ playerVt=vt; player=ctx; addCand(ctx); }
                 }catch(e){} },
-            onLeave:function(r){ depth--; if(busy) return; if(pendingQ.length&&depth===0){ const cmd=pendingQ.shift(); busy=true; try{ execute(cmd); }catch(e){ log('exec err '+e); } busy=false; } }
+            onLeave:function(r){ depth--; if(busy||depth!==0) return;
+                if(pendingQ.length){ const cmd=pendingQ.shift(); busy=true; try{ execute(cmd); }catch(e){ log('exec err '+e); } busy=false; }
+                if(flightState.active){ busy=true; try{ flightTick(); }catch(e){ log('flight err '+e); } busy=false; }
+            }
         });
 
         // ---- AUTO-LOAD: apply installed mods on launch, no console needed (NightCity Console increment 4).
@@ -1134,7 +1292,7 @@ rpc.exports = {
         // so queueing at several delays to bracket the TweakDB/depot ready window is harmless - the call that
         // lands after readiness is the one that takes effect. Disable by creating /tmp/cp2077_no_autoload.
         try {
-            if (readFile('/tmp/cp2077_no_autoload') === null) {
+            if (!NCC_COMMAND_ONLY_233 && readFile('/tmp/cp2077_no_autoload') === null) {
                 var alDelays = [6000, 14000, 26000, 45000];
                 alDelays.forEach(function (d) {
                     setTimeout(function () {
@@ -1150,9 +1308,17 @@ rpc.exports = {
         } catch (e) { log('[AUTOLOAD] arm err ' + e); }
     }catch(e){ log('MINI-CET v3 FAILED: '+e); }
 
+    // Everything below this point in the original runtime is a collection of
+    // Steam 2.3.1 archive/plugin experiments. The 2.3.3 menu does not need any
+    // of it, and installing those stale interceptors would be unsafe.
+    if (NCC_COMMAND_ONLY_233) {
+        log('2.3.3 command-only safety profile: legacy plugin hooks skipped');
+        return;
+    }
+
 // ===== cybermodman cmn loc-hook (re-merged after CET update) =====
 var cmnB = getModuleBase();
-var CMN_CONFIG = '/Users/ysr/Library/Application Support/Steam/steamapps/common/Cyberpunk 2077/red4ext/cybermodman_names.json';
+var CMN_CONFIG = '/tmp/cybermodman_names.json';
 var CMN_XL_LOC = '/tmp/cp2077_xl_loc.json';   // ArchiveXL macOS localization handoff (per-mod onscreens -> {fnv32/fnv64-low: text}). Auto-dumped by ArchiveXL on bring-up; served here since the engine LoadTexts merge cannot be caught post-load on macOS.
 var CMN_LOG = '/tmp/cybermodman_names.log';
 var cmnMap = {};
@@ -1262,7 +1428,7 @@ try { cmnLog('=== cybermodman custom-names init ==='); cmnLoad(); cmnInstall(); 
 //   we ever construct/append anything. Flip CP2077_MODDIR_WRITE=true ONLY after
 //   the dump confirms the offsets live.
 //
-// Offset truth (/Users/ysr/cp2077/_ghidra/offsets.json, VERIFIED):
+// Offset truth (private Ghidra analysis workspace, VERIFIED):
 //   InitializeArchives outer = base+0x3ed9578  (hook onLeave of the OUTER, not
 //                                                the inner worker 0x3ed96b0)
 //   ArchiveSet::Append       = base+0x3edd568
@@ -1413,8 +1579,7 @@ try { cmnLog('=== cybermodman custom-names init ==='); cmnLoad(); cmnInstall(); 
         } catch (e) { mlog('dumpDepot err: ' + e); }
     }
 
-    // Resolve <gamedir> from the depot rootPath (CString @ depot+0x30 per offsets.json),
-    // falling back to the known Steam install path used elsewhere in this file.
+    // Resolve <gamedir> from the depot rootPath (CString @ depot+0x30 per offsets.json).
     function gameDirFrom(depot){
         try {
             var root = readCStr(depot.add(0x30));
@@ -1422,7 +1587,7 @@ try { cmnLog('=== cybermodman custom-names init ==='); cmnLoad(); cmnInstall(); 
                 return root.replace(/[\/\\]+$/, '');
             }
         } catch (e) {}
-        return '/Users/ysr/Library/Application Support/Steam/steamapps/common/Cyberpunk 2077';
+        return '';
     }
 
     var didWrite = false;
@@ -2045,6 +2210,7 @@ function g_detachFinalizeHooks() {
 }
 
 (function installNativeReg(){
+    if (NCC_COMMAND_ONLY_233) return;
     function nlog(s){ try{ var f=new File('/tmp/cp2077_redlib.log','a'); f.write(s+'\n'); f.flush(); f.close(); }catch(e){} }
     try {
         var disabled = false; try { File.readAllText('/tmp/cp2077_no_natreg'); disabled = true; } catch(e){}
@@ -2179,6 +2345,7 @@ function g_detachFinalizeHooks() {
 // /tmp/cp2077_bindfail (create it to enable) so it never runs in normal play. Name resolved only on
 // failure (onLeave), so the thousands of successful resolves cost nothing.
 (function installBindDiag(){
+    if (NCC_COMMAND_ONLY_233) return;
     function blog(s){ try{ var f=new File('/tmp/cp2077_bindfail.log','a'); f.write(s+'\n'); f.flush(); f.close(); }catch(e){} }
     try {
         // Gated on a SEPARATE flag now: this validator-hook approach OVER-REPORTS (null return != genuine miss;
@@ -2216,6 +2383,7 @@ function g_detachFinalizeHooks() {
 // diag above OVER-REPORTS (cascade); this captures ONLY the real errors by filtering the FORMAT string (x1) and
 // reading the substituted name (x2). Writes to /tmp/cp2077_bindfmt.log. Gated on /tmp/cp2077_bindfail.
 (function installBindFormatterDiag(){
+    if (NCC_COMMAND_ONLY_233) return;
     function flog(s){ try{ var f=new File('/tmp/cp2077_bindfmt.log','a'); f.write(s+'\n'); f.flush(); f.close(); }catch(e){} }
     try {
         var on=false; try{ File.readAllText('/tmp/cp2077_bindfail'); on=true; }catch(e){}
@@ -2264,6 +2432,7 @@ function g_detachFinalizeHooks() {
 // item, so unlike installBindDiag this does NOT over-report the cascade. The loop visits all items and w23 sums
 // ALL failures before the panic, so one launch enumerates the COMPLETE reject set. Gated on /tmp/cp2077_bindreject.
 (function installBindRejectDiag(){
+    if (NCC_COMMAND_ONLY_233) return;
     var LOG='/tmp/cp2077_bindreject.log';
     function wlog(s){ try{ var f=new File(LOG,'a'); f.write(s+'\n'); f.flush(); f.close(); }catch(e){} try{console.log('[BIND-REJECT] '+s);}catch(e){} }
     try {
@@ -2294,6 +2463,7 @@ function g_detachFinalizeHooks() {
 // (a FUNCTION ENTRY - safe, unlike a loop-instruction hook), resolve collector->vtable[2] at runtime, and attach a
 // logger to it. Each call logs the FULLY-FORMATTED error (class/member names substituted). Gated /tmp/cp2077_binderr.
 (function installBindErrorCapture(){
+    if (NCC_COMMAND_ONLY_233) return;
     var LOG='/tmp/cp2077_binderr.log';
     function elog(s){ try{ var f=new File(LOG,'a'); f.write(s+'\n'); f.flush(); f.close(); }catch(e){} }
     try {
@@ -2340,6 +2510,7 @@ function g_detachFinalizeHooks() {
 // ScriptableService (and callbacks registered from OnLoad) silently does nothing.
 // Escape hatch: touch /tmp/cp2077_no_svcinit
 (function(){
+    if (NCC_COMMAND_ONLY_233) return;
     // Self-contained logger: nlog/elog are function-scoped inside their own IIFEs and NOT visible here.
     // Referencing them killed the whole script at gadget load (ReferenceError), which took the BIND-PATCH
     // below down with it -> 3510 validation failures -> binder formatter crash. Never share loggers across
@@ -2388,6 +2559,7 @@ function g_detachFinalizeHooks() {
 // build 5314028: (A) 0x21fc754 tbz w0,#0,0x1021fc7dc -> b 0x1021fc83c ; (B) 0x21fc98c tbz w8,#0,0x1021fc9f4 ->
 // b 0x1021fc9f4 ; (C) 0x21fcb80 tbnz w0,#0,0x1021fcc14 -> b 0x1021fcc14. b = 0x14000000 | ((tgt-pc)>>2).
 (function installBindPatch(){
+    if (NCC_COMMAND_ONLY_233) return;
     var LOG='/tmp/cp2077_bindpatch.log';
     function plog(s){ try{ var f=new File(LOG,'a'); f.write(s+'\n'); f.flush(); f.close(); }catch(e){} try{console.log('[BIND-PATCH] '+s);}catch(e){} }
     try {
@@ -2456,6 +2628,7 @@ function g_detachFinalizeHooks() {
 // unk118 and both walks survive. dfb4 gets a belt-and-suspenders unk118 compact. The log names the exact
 // class+prop for the durable source fix. Gated on /tmp/cp2077_finaldiag; logs to /tmp/cp2077_finaldiag.log.
 (function installFinalizeFix(){
+    if (NCC_COMMAND_ONLY_233) return;
     function flog(s){ try{ var f=new File('/tmp/cp2077_finaldiag.log','a'); f.write(s+'\n'); f.flush(); f.close(); }catch(e){} }
     try {
         // The bug-#1 preserve fix runs whenever Codeware is active (/tmp/cp2077_codeware_real); the verbose
@@ -2706,6 +2879,7 @@ function g_detachFinalizeHooks() {
 // Appends to /tmp/cp2077_vaspawn.log with ISO timestamps. Rate-capped: first 400 events per hook,
 // then 1-in-50 sampling, so SpawnFromLocal cannot flood the log or tank frame time on IO.
 (function installSpawnProbe(){
+    if (NCC_COMMAND_ONLY_233) return;
     var LOG='/tmp/cp2077_vaspawn.log';
     function ts(){ try{ return new Date().toISOString(); }catch(e){ return '?'; } }
     function vlog(s){ try{ var f=new File(LOG,'a'); f.write(ts()+' '+s+'\n'); f.flush(); f.close(); }catch(e){} try{ console.log('[VASPAWN] '+s); }catch(e2){} }

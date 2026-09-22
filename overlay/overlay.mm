@@ -2,7 +2,7 @@
 //   * Renders an ImGui console onto the live game frame via a -[<cmdbuf> presentDrawable:] swizzle.
 //   * Captures input via a -[NSApplication sendEvent:] swizzle (main thread) into a locked queue,
 //     drained on the render thread so ALL ImGui calls stay single-threaded.
-//   * Toggle with the backtick/tilde (`) key or F1. When open, input is swallowed from the game.
+//   * Local QWERTZ build: toggle with the ISO < > key or F1. When open, input is swallowed.
 //   * Submitting a line writes it to /tmp/cp2077_cmd.txt (the existing Frida command channel);
 //     the console tails /tmp/cp2077_out.txt for results. Fully decoupled from the Frida executor.
 #import <Foundation/Foundation.h>
@@ -60,6 +60,25 @@ static IMP g_origSendEvent = NULL;
 static bool g_imguiInit = false;
 static unsigned long g_frame = 0;
 static std::atomic<bool> g_show{false};
+// Flight is executed by the Frida game-thread runtime, but keyboard events arrive here on the
+// AppKit thread. These exported atomics are the deliberately tiny bridge between the two.
+enum NccFlightKey : uint32_t {
+    NCC_FL_FWD=1u, NCC_FL_BACK=2u, NCC_FL_LEFT=4u, NCC_FL_RIGHT=8u,
+    NCC_FL_UP=16u, NCC_FL_DOWN=32u, NCC_FL_BOOST=64u
+};
+static std::atomic<bool> g_flightActive{false};
+static std::atomic<uint32_t> g_flightInput{0};
+static std::atomic<bool> g_flightStopRequested{false};
+extern "C" __attribute__((visibility("default"))) uint32_t nccFlightInputMask() {
+    return (g_flightActive.load() && !g_show.load()) ? g_flightInput.load() : 0u;
+}
+extern "C" __attribute__((visibility("default"))) void nccSetFlightActive(uint32_t active) {
+    g_flightActive = (active != 0); g_flightInput = 0u;
+    if (active) g_flightStopRequested = false;
+}
+extern "C" __attribute__((visibility("default"))) uint32_t nccConsumeFlightStopRequest() {
+    return g_flightStopRequested.exchange(false) ? 1u : 0u;
+}
 static std::atomic<bool> g_focusInput{false};
 static std::atomic<int>  g_activeTab{0};        // 0 Console, 1 Items, 2 Quick
 static std::atomic<bool> g_tabReq{false};       // a keyboard tab-switch was requested
@@ -157,9 +176,14 @@ typedef uint64_t (*NccExecFn)(void* fn, void* ctx, void* frame, void* result, vo
 typedef void*    (*NccRegGetter)();
 typedef void*    (*NccGetClassFn)(void* reg, uint64_t nameHash);
 
+// Cyberpunk 2077 App Store 2.3.3, executable SHA-256
+// 307f437db1e350b07404c9dbc16f69860ad5304444849060cc348d5e3663259e.
+static constexpr uintptr_t NCC_SCRIPT_EXECUTOR_OFFSET = 0x434E444;
+static constexpr uintptr_t NCC_RTTI_GET_OFFSET = 0x4363898;
+
 static uint64_t nccFnv1a64(const char* s){ uint64_t h=0xCBF29CE484222325ULL; for(;*s;++s){ h^=(uint64_t)(uint8_t)*s; h*=0x100000001b3ULL; } return h; }
 
-// Main game executable load address (the MH_EXECUTE image). Offsets like 0x2173120 add to this.
+// Main game executable load address (the MH_EXECUTE image). Engine offsets add to this.
 // Selecting by Mach-O filetype (not a fixed dyld index) is the robust form of the old index bug.
 static uintptr_t nccGameBase(){
     static uintptr_t base = 0;
@@ -176,7 +200,7 @@ static void* g_nccReg = nullptr; static NccGetClassFn g_nccGetClass = nullptr;
 static void nccEnsureReg(){
     if (g_nccReg) return;
     uintptr_t base = nccGameBase(); if (!base) return;
-    NccRegGetter getter = (NccRegGetter)(base + 0x2188e8c);   // CRTTISystem::Get
+    NccRegGetter getter = (NccRegGetter)(base + NCC_RTTI_GET_OFFSET); // CRTTISystem::Get
     g_nccReg = getter(); if (!g_nccReg) return;
     void* vt = *(void**)g_nccReg;                              // registry vtable
     g_nccGetClass = *(NccGetClassFn*)((uintptr_t)vt + 0x10);   // GetClass @ vt+0x10
@@ -217,7 +241,7 @@ static void nccHexDump(const char* label, const void* p, int n){
 // Heap-allocated (16-byte aligned, like Frida Memory.alloc) to match the working hooks.js path.
 // Returns the executor's own return code (for diagnostics).
 static uint64_t nccCallNoArg(void* fn, void* ctx, void* retType, uint8_t* result16){
-    NccExecFn Exec = (NccExecFn)(nccGameBase() + 0x2173120);
+    NccExecFn Exec = (NccExecFn)(nccGameBase() + NCC_SCRIPT_EXECUTOR_OFFSET);
     uint8_t* bc = (uint8_t*)calloc(1, 64); if(bc) bc[0]=0x26;  // ParamEnd
     uint8_t* locals = (uint8_t*)calloc(1, 0x40);
     uint8_t* frame  = (uint8_t*)calloc(1, 0x90);
@@ -264,7 +288,7 @@ static uint64_t nccTypeName(void* type){ if(!type) return 0; void* vt=*(void**)t
 // parsed by the param type. result16 = 16-byte out buffer. Returns the executor rc; on a marshalling
 // error returns 0 and fills *err. gameItemID (T_ITEM) is not yet ported (still goes via the bridge).
 static uint64_t nccCall(const NccFn* f, void* ctx, int argc, const char** argv, uint8_t* result16, std::string* err){
-    NccExecFn Exec = (NccExecFn)(nccGameBase() + 0x2173120);
+    NccExecFn Exec = (NccExecFn)(nccGameBase() + NCC_SCRIPT_EXECUTOR_OFFSET);
     void* pEntries = *(void**)((uintptr_t)f->fn + 0x28);
     uint32_t pCount = *(uint32_t*)((uintptr_t)f->fn + 0x30);
     uint8_t* locals = (uint8_t*)calloc(1, 0x40 + (size_t)argc*0x20);
@@ -314,7 +338,7 @@ static uint64_t nccCall(const NccFn* f, void* ctx, int argc, const char** argv, 
 enum { NCC_HANDLE, NCC_RAW, NCC_I32, NCC_U64 };
 struct NccItem { int kind; void* inst; const void* raw; int n; uint64_t v; };
 static uint64_t nccCallRaw(const NccFn* f, void* ctx, const std::vector<NccItem>& items, uint8_t* result16){
-    NccExecFn Exec = (NccExecFn)(nccGameBase() + 0x2173120);
+    NccExecFn Exec = (NccExecFn)(nccGameBase() + NCC_SCRIPT_EXECUTOR_OFFSET);
     void* pEntries = *(void**)((uintptr_t)f->fn + 0x28);
     uint8_t* locals = (uint8_t*)calloc(1, 0x40 + items.size()*0x20);
     std::vector<void*> props;
@@ -496,6 +520,8 @@ static void handleSubmit(const char* cmd) {
         appendOut("items:  give <Items.X> <qty> | removeitem <Items.X> <qty> | money <n>");
         appendOut("        CET style: Game.AddToInventory(\"Items.X\", n)");
         appendOut("char:   perks <n> | attrs <n> | relic <n> | level <n> | streetcred <n> | heal | godmode [off] | invis [off] | infammo [off]");
+        appendOut("move:   speed <0.25-10|max|off> | fly [10-300 seconds|off]");
+        appendOut("        flight: WASD move | Space up | Ctrl down | Shift boost | Esc stop");
         appendOut("world:  time <h> [m] | slowmo [factor|off] | nopolice [off]");
         appendOut("        teleport save <name> | teleport <name> | teleport <x> <y> <z> | setfact <name> <n>");
         appendOut("misc:   call <Class> <method> [args] | sig <Class> <method> | convdump | clear | help");
@@ -1059,6 +1085,9 @@ static void drawQuickTab() {
     if (ImGui::Button("Relic +10")) runLabeled("relic 10", "Relic +10"); ImGui::SameLine();
     if (ImGui::Button("Level 50")) runLabeled("level 50", "Level 50"); ImGui::SameLine();
     if (ImGui::Button("Street Cred 50")) runLabeled("streetcred 50", "Street Cred 50");
+    if (ImGui::Button("Speed x2")) runLabeled("speed 2", "Movement speed x2"); ImGui::SameLine();
+    if (ImGui::Button("Max speed x5")) runLabeled("speed max", "Movement speed x5"); ImGui::SameLine();
+    if (ImGui::Button("Normal speed")) runLabeled("speed off", "Movement speed restored");
     ImGui::Separator();
     ImGui::TextDisabled("World:");
     if (ImGui::Button("Day")) runLabeled("time 12", "Time: noon"); ImGui::SameLine();
@@ -1067,6 +1096,9 @@ static void drawQuickTab() {
     if (ImGui::Button("Slow-mo off")) runLabeled("slowmo off", "Slow-mo off"); ImGui::SameLine();
     if (ImGui::Button("No police")) runLabeled("nopolice", "Police disabled"); ImGui::SameLine();
     if (ImGui::Button("Police on")) runLabeled("nopolice off", "Police enabled");
+    if (ImGui::Button("Flight (60s)")) runLabeled("fly 60", "Flight enabled for 60 seconds"); ImGui::SameLine();
+    if (ImGui::Button("Flight off")) runLabeled("fly off", "Flight disabled");
+    ImGui::TextDisabled("Flight controls after closing the menu: WASD, Space up, Ctrl down, Shift boost, Esc stop.");
     ImGui::Separator();
     ImGui::TextDisabled("Teleport bookmark (save a spot, return later):");
     static char tpname[64] = "home";
@@ -1695,7 +1727,7 @@ static void drawConsole() {
     if (g_tabsDirty.exchange(false)) rebuildTabs();
     ImGui::SetNextWindowSize(ImVec2(860, 480), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(48, 48), ImGuiCond_FirstUseEver);
-    ImGui::Begin("NightCity Console  ( ` or F1 to toggle )");
+    ImGui::Begin("Night City Menu  ( < or F1 to toggle )");
     ImGui::TextDisabled("Cmd+1..9 switch tabs   (`reload` re-reads tabs/)");
     int req = -1;
     if (g_tabReq.exchange(false)) req = g_activeTab.load();   // a keyboard tab-switch this frame
@@ -1776,7 +1808,7 @@ static void runRender(id self, id drawable) {
     // Perf: nothing is drawn when the console is closed (drawConsole()/luaRunOnDraw() are g_show-gated), yet
     // compositing an empty ImGui pass every frame still re-loads+stores the whole framebuffer (loadAction=Load)
     // and serializes against the game's GPU work - measured ~40-60ms/frame at 4K with the console CLOSED. Skip
-    // the whole pass when closed; the present hook stays installed so backtick still opens it instantly.
+    // the whole pass when closed; the present hook stays installed so the toggle key still opens it instantly.
     if (!g_show.load()) return;
     @autoreleasepool {
         @try { renderOverlay((id<MTLCommandBuffer>)self, (id<CAMetalDrawable>)drawable); }
@@ -1812,14 +1844,47 @@ static void my_presentAfter(id self, SEL _cmd, id drawable, CFTimeInterval d) {
     g_presentDepth--;
 }
 
+// Capture only the keys owned by temporary flight. Everything else continues to the game normally.
+// Modifier keys arrive as NSEventTypeFlagsChanged, so Ctrl/Shift are derived from modifierFlags.
+static bool updateFlightInput(NSEvent* ev) {
+    if (!g_flightActive.load() || g_show.load()) return false;
+    NSEventType t = ev.type;
+    uint32_t mask = g_flightInput.load();
+    NSEventModifierFlags mf = ev.modifierFlags;
+    if (mf & NSEventModifierFlagControl) mask |= NCC_FL_DOWN; else mask &= ~NCC_FL_DOWN;
+    if (mf & NSEventModifierFlagShift) mask |= NCC_FL_BOOST; else mask &= ~NCC_FL_BOOST;
+    bool consumed = false;
+    if (t == NSEventTypeKeyDown || t == NSEventTypeKeyUp) {
+        bool down = (t == NSEventTypeKeyDown);
+        uint32_t bit = 0u;
+        switch (ev.keyCode) {
+            case 13: bit = NCC_FL_FWD; break;    // W (same physical key on QWERTZ)
+            case 1:  bit = NCC_FL_BACK; break;   // S
+            case 0:  bit = NCC_FL_LEFT; break;   // A
+            case 2:  bit = NCC_FL_RIGHT; break;  // D
+            case 49: bit = NCC_FL_UP; break;     // Space
+            case 53: if (down) g_flightStopRequested = true; consumed = true; break; // Esc
+            default: break;
+        }
+        if (bit) { if (down) mask |= bit; else mask &= ~bit; consumed = true; }
+    } else if (t == NSEventTypeFlagsChanged) {
+        unsigned short kc = ev.keyCode;
+        consumed = (kc == 59 || kc == 62 || kc == 56 || kc == 60); // left/right Ctrl or Shift
+    }
+    g_flightInput = mask;
+    return consumed;
+}
+
 static void my_sendEvent(id self, SEL _cmd, NSEvent* ev) {
     @try {
         NSEventType t = ev.type;
         if (t == NSEventTypeKeyDown) {
             unsigned short kc = ev.keyCode;
-            if (kc == 50 || kc == 122) {  // ` (grave/tilde) or F1
+            // macOS virtual keycode 10 is the ISO < > | key beside left Shift on QWERTZ.
+            if (kc == 10 || kc == 122) {  // < on QWERTZ, or F1 as a fallback
                 bool now = !g_show.load();
                 g_show = now;
+                g_flightInput = 0u; // never keep a movement key latched while opening/closing the menu
                 if (now) { g_focusInput = true; g_recenterMouse = true; NSWindow* w = ev.window; if (w) [w setAcceptsMouseMovedEvents:YES]; }
                 return;  // swallow the toggle key
             }
@@ -1840,6 +1905,7 @@ static void my_sendEvent(id self, SEL _cmd, NSEvent* ev) {
                 if (kc == 5)  { g_catFilter = (g_catFilter.load() + 1) % g_numCategories; g_catReq = true; return; }  // Cmd+G cycles item category
             }
         }
+        if (updateFlightInput(ev)) return;
         if (g_show.load()) {
             pushEventFromNS(ev);
             if (t == NSEventTypeKeyDown || t == NSEventTypeKeyUp || t == NSEventTypeFlagsChanged ||

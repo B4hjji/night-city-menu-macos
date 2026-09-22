@@ -3,21 +3,21 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>NightCity Console</string>
+	<string>Night City Menu 2.3.3</string>
 	<key>CFBundleExecutable</key>
 	<string>NightCityConsole</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.ysr.nightcityconsole</string>
+	<string>dev.nightcityconsole.menu233</string>
 	<key>CFBundleName</key>
-	<string>NightCity Console</string>
+	<string>Night City Menu 2.3.3</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.5.0</string>
+	<string>2.3.3.1</string>
 	<key>CFBundleVersion</key>
-	<string>1.5.0</string>
+	<string>2.3.3.1</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.games</string>
 	<key>LSArchitecturePriority</key>
@@ -28,5 +28,7 @@
 	<string>12.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NCCRepositoryURL</key>
+	<string>https://github.com/B4hjji/night-city-menu-macos</string>
 </dict>
 </plist>

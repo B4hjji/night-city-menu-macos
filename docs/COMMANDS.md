@@ -1,11 +1,13 @@
-# NightCity Console - command reference
+# Night City Menu - command reference
 
-Toggle the in-game console with **`` ` ``** (backtick/tilde) or **F1**. Type a command and press **Enter**.
+This reference covers the Mac App Store 2.3.3 profile. Toggle the in-game console with the ISO/QWERTZ
+**`<`** key or **F1**. Type a command and press **Enter**.
 Use **↑/↓** for history and **Cmd+V/C/X/A** for clipboard. Type `help` in-game for a quick list.
 
 > Single-player only. Back up your saves before experimenting.
 
 ## Items & money
+
 | Command | Effect |
 |---|---|
 | `give <Items.Name> <qty>` | Add an item. qty ≤ 20 -> distinct instances (weapons); > 20 -> one bulk stack. |
@@ -16,6 +18,7 @@ Use **↑/↓** for history and **Cmd+V/C/X/A** for clipboard. Type `help` in-ga
 Item IDs are the same `Items.*` TweakDB names CET uses, so codes you find online work here.
 
 ## Character
+
 | Command | Effect |
 |---|---|
 | `perks <N>` | Add N perk points. |
@@ -27,11 +30,14 @@ Item IDs are the same `Items.*` TweakDB names CET uses, so codes you find online
 | `godmode [off]` | Toggle invulnerability - no damage at all, including fall damage. |
 | `invis [off]` | Toggle invisibility - cameras and enemies can't see you. |
 | `infammo [off]` | Toggle infinite ammo. |
+| `speed <0.25-10\|max\|off>` | Temporary movement-speed multiplier. `max` is 5x; `off` restores normal speed. |
+| `fly [seconds\|off]` | Camera-relative temporary flight (default 60 seconds; range 10-300). |
 | `time <h> [m]` | Set the in-game time of day (24h). |
 | `slowmo [factor\|off]` | Slow motion (default 0.3x; e.g. `slowmo 0.1`). |
 | `nopolice [off]` | Disable / re-enable the police response. |
 
 ## World
+
 | Command | Effect |
 |---|---|
 | `teleport` | Print your current coords + saved bookmarks. |
@@ -41,6 +47,7 @@ Item IDs are the same `Items.*` TweakDB names CET uses, so codes you find online
 | `setfact <name> <value>` | Set a quest fact flag. |
 
 ## Power tools
+
 | Command | Effect |
 |---|---|
 | `call <Class> <method> [args]` | Invoke any **observed** RTTI method (args auto-marshalled). |
@@ -49,9 +56,14 @@ Item IDs are the same `Items.*` TweakDB names CET uses, so codes you find online
 | `clear` / `help` | Clear scrollback / list commands. |
 
 ## Notes & known limits
+
 - **godmode / invis**: applied as player status effects (`BaseStatusEffect.Invulnerable` / `Cloaked`) and
   reapplied on a tick so they survive scene/vehicle transitions. Godmode blocks all damage including falls.
   Invisibility breaks line-of-sight and camera detection; physically bumping into an enemy still alerts them.
 - **teleport** is blocked by the game during active combat; bookmarks are session-only.
+- **speed** is session-only and does not alter the save's permanent stats. `speed off` removes the menu's
+  own MaxSpeed delta without removing bonuses supplied by perks or cyberware.
+- **flight** is session-only and never saved. Close the menu, then use **WASD** to move, **Space** to rise,
+  **Ctrl** to descend, **Shift** to boost, and **Esc** to stop early. It also stops when its timer expires.
 - **Quest-gated items** (e.g. `Items.mq007_skippy`) won't commit without the relevant quest active.
 - **Deferred / contributions welcome**: real vehicle summon, equip-to-slot, NPC/vehicle spawn.

@@ -1,6 +1,6 @@
 # Signing + notarizing a macOS app (portable recipe)
 
-Extracted from `tools/sign-notarize.sh`, which ships NightCity Console. Everything here is app-agnostic
+Extracted from `tools/sign-notarize.sh`, which ships Night City Menu. Everything here is app-agnostic
 except where marked. Written to be handed to another assistant working on a different app.
 
 **No secrets appear in this document or in the script.** Credentials live in the macOS keychain under a
@@ -130,7 +130,7 @@ xcrun stapler staple dist/YourApp.dmg
 ```
 
 Note: create the dmg **directly from a staging folder**. The classic attach → Finder-style → convert dance
-is flaky on recent macOS (deprecated `hdiutil` paths) and leaves stale `/Volumes/Your App 1`, `2`, ... mounts
+is flaky on recent macOS (deprecated `hdiutil` paths) and can leave numbered stale mounts under `/Volumes`
 that make later runs fail with "Resource temporarily unavailable". If you inherit that problem:
 
 ```bash
@@ -170,7 +170,7 @@ reproduce Gatekeeper behavior.
 
 ## 7. Reference implementation
 
-`tools/sign-notarize.sh` in this repo does all of the above for NightCity Console. Invocation:
+`tools/sign-notarize.sh` in this repo does all of the above for Night City Menu. Invocation:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: NAME (TEAMID)" \

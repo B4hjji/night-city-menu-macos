@@ -1,0 +1,9 @@
+Frida
+=====
+
+Frida is developed by Ole Andre Vadla Ravnas and contributors.
+This project redistributes Frida Gadget without modification.
+
+License: wxWindows Library Licence, Version 3.1
+Official license text: https://github.com/frida/frida/blob/main/COPYING
+Project: https://frida.re/

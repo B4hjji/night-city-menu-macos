@@ -1,86 +1,81 @@
-#!/bin/bash
-# Build "NightCity Console.app" (ad-hoc signed, for dev/testing).
-# Bundles the runtime payload into Contents/Resources so the app can install it into the game.
-# Release signing + notarization + .dmg is a separate step: tools/sign-notarize.sh
-set -e
-cd "$(dirname "$0")/.."   # repo root
-APP="build/NightCity Console.app"
+#!/usr/bin/env bash
+# Build an ad-hoc-signed Night City Menu app for local use.
+# Release signing, notarization, and packaging are handled by tools/sign-notarize.sh.
+set -euo pipefail
 
-echo "==> overlay + deps"
-./overlay/build.sh
-./tools/fetch-deps.sh
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
-echo "==> assembling $APP"
+APP_NAME="Night City Menu 2.3.3.app"
+APP="$ROOT/build/$APP_NAME"
+FRIDA_GADGET="${FRIDA_GADGET:-$ROOT/deps/FridaGadget.dylib}"
+MODULE_CACHE="${NCC_MODULE_CACHE:-$ROOT/build/module-cache}"
+
+for tool in swiftc clang++ codesign file plutil; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    echo "error: required tool '$tool' was not found" >&2
+    exit 1
+  }
+done
+
+if [[ ! -f "$FRIDA_GADGET" ]]; then
+  echo "error: Frida Gadget was not found at: $FRIDA_GADGET" >&2
+  echo "Run ./tools/fetch-deps.sh, or set FRIDA_GADGET=/absolute/path/FridaGadget.dylib." >&2
+  exit 1
+fi
+if ! file "$FRIDA_GADGET" | grep -q 'arm64'; then
+  echo "error: Frida Gadget does not contain an arm64 slice: $FRIDA_GADGET" >&2
+  exit 1
+fi
+
+echo "==> Building overlay"
+"$ROOT/overlay/build.sh"
+
+echo "==> Assembling $APP_NAME"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp launcher/Info.plist "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$MODULE_CACHE"
+cp "$ROOT/launcher/Info.plist" "$APP/Contents/Info.plist"
 
-echo "==> compiling launcher"
+if [[ -n "${NCC_REPOSITORY_URL:-}" ]]; then
+  /usr/libexec/PlistBuddy -c "Set :NCCRepositoryURL ${NCC_REPOSITORY_URL}" "$APP/Contents/Info.plist"
+fi
+plutil -lint "$APP/Contents/Info.plist" >/dev/null
+
+echo "==> Compiling launcher"
+SWIFT_MODULECACHE_PATH="$MODULE_CACHE/swift" \
+CLANG_MODULE_CACHE_PATH="$MODULE_CACHE/clang" \
 swiftc -O -parse-as-library -target arm64-apple-macos12 \
+  -module-cache-path "$MODULE_CACHE/swift" \
   -o "$APP/Contents/MacOS/NightCityConsole" \
-  launcher/Sources/*.swift
+  "$ROOT"/launcher/Sources/*.swift
 
-echo "==> bundling payload into Resources"
-cp runtime/red4ext_hooks.js runtime/FridaGadget.config runtime/cet_catalog.tsv "$APP/Contents/Resources/"
-cp deps/RED4ext.dylib deps/FridaGadget.dylib            "$APP/Contents/Resources/"
-cp build/libcyberconsole_overlay.dylib                  "$APP/Contents/Resources/"
-# CyberModMan creator payload: seed the names file + RED4ext's config.ini (enables plugin loading) + AddressLib.
-cp runtime/cybermodman/cybermodman_names.json "$APP/Contents/Resources/"
-cp deps/config.ini deps/cyberpunk2077_addresses.json "$APP/Contents/Resources/" 2>/dev/null \
-  || echo "  [warn] config.ini / cyberpunk2077_addresses.json missing from deps/ (re-run tools/fetch-deps.sh)"
-# Vendor the RED4ext plugins (TweakXL + ArchiveXL) so they ship SELF-CONTAINED: both link against Homebrew
-# spdlog/fmt/yaml-cpp (/opt/homebrew/...), which do not exist on a user's Mac -> the plugins fail to load and
-# the cybermodman_tweakReload/archiveReload exports go missing. vendor-plugin.sh copies each plugin + those 3
-# dylibs into its plugin folder with @loader_path refs. The launcher deploys Resources/plugins -> red4ext/plugins.
-mkdir -p "$APP/Contents/Resources/plugins"
-bash tools/vendor-plugin.sh deps/TweakXL.dylib   "$APP/Contents/Resources/plugins/TweakXL"
-bash tools/vendor-plugin.sh deps/ArchiveXL.dylib "$APP/Contents/Resources/plugins/ArchiveXL"
+echo "==> Bundling runtime"
+cp "$ROOT/runtime/red4ext_hooks.js" \
+   "$ROOT/runtime/FridaGadget.config" \
+   "$ROOT/runtime/cet_catalog.tsv" \
+   "$APP/Contents/Resources/"
+cp "$FRIDA_GADGET" "$APP/Contents/Resources/FridaGadget.dylib"
+cp "$ROOT/build/libcyberconsole_overlay.dylib" "$APP/Contents/Resources/"
 
-echo "==> bundling nctool mod engine (drag-drop installer)"
-# nctool is the cp2077 archive/mod engine. Publish it self-contained (multi-file: the single-file variant
-# tucks libkraken into a lib/ subfolder the runtime can't find) so the shipped app needs no dotnet; the
-# launcher shells out to Resources/nctool/nctool. Set NCTOOL_SRC to override the location.
-NCTOOL_SRC="${NCTOOL_SRC:-$HOME/cp2077/_tools/nctool}"
-if [ -d "$NCTOOL_SRC" ]; then
-  DOTNET="$(command -v dotnet || echo "$HOME/.dotnet/dotnet")"
-  rm -rf build/nctool-pub
-  "$DOTNET" publish "$NCTOOL_SRC" -c Release -r osx-arm64 --self-contained true \
-    -p:PublishSingleFile=false -o build/nctool-pub >/dev/null
-  rm -f build/nctool-pub/*.pdb
-  # Bundle the whole self-contained publish (exe + .NET runtime + libkraken.dylib) into Resources/nctool/.
-  rm -rf "$APP/Contents/Resources/nctool"
-  ditto build/nctool-pub "$APP/Contents/Resources/nctool"
-  echo "  bundled nctool self-contained ($(ls "$APP/Contents/Resources/nctool" | wc -l | tr -d ' ') files)"
-else
-  echo "  [warn] nctool source not found at $NCTOOL_SRC - the mod installer will show 'helper missing'."
-  echo "         Set NCTOOL_SRC=/path/to/cp2077/_tools/nctool and rebuild to enable drag-drop mod install."
-fi
+echo "==> Bundling licenses and notices"
+LICENSE_DIR="$APP/Contents/Resources/Licenses"
+mkdir -p "$LICENSE_DIR"
+cp "$ROOT/LICENSE" "$LICENSE_DIR/Night-City-Menu-LICENSE.txt"
+cp "$ROOT/NOTICE.md" "$LICENSE_DIR/Night-City-Menu-NOTICE.md"
+cp "$ROOT/THIRD_PARTY_LICENSES.md" "$LICENSE_DIR/THIRD-PARTY-NOTICES.md"
+cp "$ROOT/overlay/imgui/LICENSE.txt" "$LICENSE_DIR/Dear-ImGui-LICENSE.txt"
+cp "$ROOT/overlay/lua-5.1.5/COPYRIGHT" "$LICENSE_DIR/Lua-5.1.5-LICENSE.txt"
+cp "$ROOT/third_party/Frida-NOTICE.txt" "$LICENSE_DIR/Frida-NOTICE.txt"
 
-echo "==> bundling redscript compiler (scc)"
-# jac3km4/redscript's scc (arm64) + its dylib. The launcher deploys them to <game>/engine/tools/ and
-# runs scc -compile before every launch so drag-dropped .reds script mods just work. Rust AOT binary:
-# no JIT entitlements needed; sign-notarize.sh's Resources Mach-O loop signs both automatically.
-mkdir -p "$APP/Contents/Resources/scc"
-if cp deps/scc deps/libscc_lib.dylib "$APP/Contents/Resources/scc/" 2>/dev/null; then
-  chmod +x "$APP/Contents/Resources/scc/scc"
-  echo "  bundled scc + libscc_lib.dylib"
-else
-  echo "  [warn] scc missing from deps/ (re-run tools/fetch-deps.sh) - script mods won't compile"
-fi
+[[ -f "$ROOT/assets/AppIcon.icns" ]] || {
+  echo "error: assets/AppIcon.icns is missing" >&2
+  exit 1
+}
+echo "==> Bundling app icon"
+cp "$ROOT/assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
-if [ -f assets/icon.png ]; then
-  echo "==> generating app icon (AppIcon.icns from assets/icon.png)"
-  ICONSET="build/AppIcon.iconset"
-  rm -rf "$ICONSET"; mkdir -p "$ICONSET"
-  for s in 16 32 128 256 512; do
-    sips -z "$s" "$s"             assets/icon.png --out "$ICONSET/icon_${s}x${s}.png"    >/dev/null
-    sips -z "$((s*2))" "$((s*2))" assets/icon.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
-  done
-  iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
-  rm -rf "$ICONSET"
-fi
+echo "==> Ad-hoc signing"
+codesign --sign - --deep --force --timestamp=none "$APP" >/dev/null
+codesign --verify --deep --strict "$APP"
 
-echo "==> ad-hoc signing"
-codesign -s - --deep --force "$APP" >/dev/null
-echo "built $APP"
-echo "Run it:  open \"$APP\"   (first launch may need right-click -> Open until notarized)"
+echo "Built: $APP"

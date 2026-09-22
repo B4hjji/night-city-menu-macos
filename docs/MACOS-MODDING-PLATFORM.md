@@ -1,5 +1,9 @@
 # The macOS Cyberpunk 2077 Modding Platform
 
+> **Historical upstream reference:** this document records the Steam 2.3.1 modding platform. The current
+> branch ships only the fail-closed App Store 2.3.3 command profile described in
+> [`APP-STORE-2.3.3.md`](APP-STORE-2.3.3.md). It does not ship the complete platform described below.
+
 This document is the definitive technical record of how Cyberpunk 2077 modding was brought to macOS on Apple Silicon, end to end. It covers every component that was ported or built, the reverse engineering that made each one possible, the specific addresses and struct offsets that were re-derived for the v2.3.1 ARM64 Steam binary, and the methodology that tied the work together.
 
 The Windows modding ecosystem for Cyberpunk 2077 is mature: RED4ext loads native plugins, RED4ext.SDK gives those plugins typed access to the engine, TweakXL edits the game database at runtime, ArchiveXL loads custom resources, and Cyber Engine Tweaks exposes a scripting console. None of it ran on the Mac. The macOS build is a different binary (Mach-O, ARM64, no Windows GS-segment TLS, no `VirtualAlloc`, no Detours-style inline patching under W^X), and the entire address library is different. This platform reconstructs that ecosystem natively for the macOS build.

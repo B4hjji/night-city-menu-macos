@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose a focused improvement to the App Store 2.3.3 menu.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: Explain what is difficult today and who benefits.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Include controls, command syntax, and rollback behavior where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Save and compatibility impact
+      description: State whether this should be session-only or persist to a save.
+    validations:
+      required: true

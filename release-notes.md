@@ -1,47 +1,33 @@
-## NightCity Console v1.0.0
+# Night City Menu 2.3.3.1
 
-An in-game cheat/mod console for Cyberpunk 2077 on macOS (Apple Silicon). The kind of thing
-Cyber Engine Tweaks does on Windows, on a platform where CET doesn't exist. Press a key in-game,
-a console appears, and you type commands. CET item codes from the internet paste in and work as-is.
+First GitHub-ready release of the focused Cyberpunk 2077 **Mac App Store 2.3.3** compatibility profile.
 
-![NightCity Console launcher](https://raw.githubusercontent.com/ysrdevs/nightcity-console-mac/main/assets/screenshot.png)
+## Highlights
 
-### Install (no Terminal needed)
-1. Download **NightCity-Console-for-Mac.dmg** (or **NightCity-Console-for-Mac.zip**) below.
-2. Open it and run **NightCity Console**.
-3. Click **Install**, then **Play**.
-4. In-game, press the backtick/tilde key (`` ` ``) or **F1** to open the console. Type `help`.
+- Native in-game Console, Items, and Quick tabs on Apple Silicon.
+- ISO/QWERTZ `<` toggle with F1 fallback.
+- Exact executable verification before injection.
+- Money, item, health, progression, level, street cred, time, police, and teleport commands.
+- Session-only movement speed controls from 0.25× to 10×.
+- Temporary camera-relative flight with timer, boost, and emergency stop.
+- Automatic discovery of internal and external App Store installations.
+- Portable launcher and build scripts with no machine-specific paths.
 
-The app finds your game, installs the files, and launches it. Steam Cloud saves keep working,
-and the game exits cleanly.
+## Compatibility
 
-### Requirements
-- macOS on Apple Silicon (arm64).
-- Cyberpunk 2077 **v2.3.1**, **Steam**. GOG support is in progress (not supported yet; engine offsets differ).
+| Build | Support |
+|---|---|
+| Cyberpunk 2077 2.3.3 from the Mac App Store, Apple Silicon | Yes |
+| Steam, GOG, Windows, Intel Mac, or another game version | No |
 
-### What you can do
-- Items: `give Items.X <qty>`, `removeitem`, `money`, plus CET-style `Game.AddToInventory("Items.X", n)`.
-- Character: `perks`, `attrs`, `relic`, `level`, `heal`.
-- World: `teleport` with position bookmarks, `setfact`.
-- Power tools: a generic `call <Class> <Method>` bridge to any observed RTTI method.
-- Console quality of life: command history (up/down) and clipboard (Cmd+V/C/X/A).
+The launcher fails closed if the version or verified instruction bytes do not match.
 
-Full command list: [docs/COMMANDS.md](https://github.com/ysrdevs/nightcity-console-mac/blob/main/docs/COMMANDS.md).
+## Install
 
-### Known limits
-- godmode registers with the engine but on 2.3.1 still takes hit damage (it prevents death, not damage).
-- Teleport is blocked by the game during active combat. Bookmarks reset each launch.
-- Quest-gated items (for example `Items.mq007_skippy`) need the relevant quest active to appear.
-- Not yet implemented: vehicle summon, equip-to-slot, NPC/vehicle spawning. Contributions welcome.
+1. Back up your saves.
+2. Download the `.dmg` or `.zip` attached to the release.
+3. Move **Night City Menu 2.3.3.app** to `/Applications`.
+4. Open it, click **Install**, then **Play**.
+5. Load a save and press `<` or F1.
 
-### Safety
-Single-player and personal use only, on your own legally-owned copy. Modding can corrupt saves,
-so back them up. Not affiliated with CD PROJEKT RED.
-
-### For developers
-Source, build instructions, and a full reverse-engineering write-up are in the repo
-([TECHNICAL.md](https://github.com/ysrdevs/nightcity-console-mac/blob/main/TECHNICAL.md)).
-
-### Credits
-Built on Dear ImGui, Frida, and the RED4ext macOS port. MIT licensed. If it saved you some hassle,
-you can support development on [Ko-fi](https://ko-fi.com/ysrdevs).
+This is an experimental, unofficial, single-player tool. Read the repository's safety notes and known limitations before using it.

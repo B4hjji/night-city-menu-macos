@@ -1,5 +1,9 @@
 # NightCity Console: how it works and how it was built
 
+> **Historical upstream reference:** this document describes the original Steam 2.3.1 implementation.
+> The supported release in this branch is the narrower App Store 2.3.3 command profile documented in
+> [`docs/APP-STORE-2.3.3.md`](docs/APP-STORE-2.3.3.md). Steam offsets below are not active in that profile.
+
 This document is the deep technical record of porting Cyber Engine Tweaks-style functionality to the native macOS (Apple Silicon) build of Cyberpunk 2077, and of the reverse engineering that made it possible. It covers injection, RTTI resolution, the engine calling convention, the Metal overlay, the launcher, and the concrete findings (addresses, struct layouts, bugs found and fixed) that this component depends on.
 
 Everything here targets the macOS (Apple Silicon) Steam build of Cyberpunk 2077 v2.3.1. Offsets and hashes are specific to that build.

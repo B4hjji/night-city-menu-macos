@@ -1,7 +1,7 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Build the NightCity Console in-game overlay dylib (arm64). Clones Dear ImGui on first run.
 # Output: build/libcyberconsole_overlay.dylib (ad-hoc signed for dev; release signing is in tools/).
-set -e
+set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(cd .. && pwd)"
 OUT="$ROOT/build/libcyberconsole_overlay.dylib"
@@ -22,8 +22,12 @@ LUA_LIB="$LUA_DIR/src/liblua5.1.a"
 if [ ! -f "$LUA_LIB" ]; then
   echo "Building PUC-Lua 5.1.5 (arm64, interpreter-only)..."
   if [ ! -d "$LUA_DIR" ]; then
-    curl -sL https://www.lua.org/ftp/lua-5.1.5.tar.gz -o /tmp/lua-5.1.5.tar.gz
-    tar xzf /tmp/lua-5.1.5.tar.gz -C .
+    LUA_ARCHIVE="$(mktemp -t night-city-menu-lua).tar.gz"
+    trap 'rm -f "$LUA_ARCHIVE"' EXIT
+    curl --fail --location --silent --show-error https://www.lua.org/ftp/lua-5.1.5.tar.gz -o "$LUA_ARCHIVE"
+    tar xzf "$LUA_ARCHIVE" -C .
+    rm -f "$LUA_ARCHIVE"
+    trap - EXIT
   fi
   LSDK="$(xcrun --sdk macosx --show-sdk-path)"
   ( cd "$LUA_DIR/src"
@@ -49,7 +53,7 @@ codesign -s - --force --timestamp=none "$OUT"
 
 # Ship the declarative tabs next to the dylib so the overlay's loadTabsFromDir()
 # (which reads overlayDir()/tabs) finds them in a dev build.
-if [ -d "tabs" ]; then
+if compgen -G "tabs/*.json" >/dev/null; then
   rm -rf "$ROOT/build/tabs"
   cp -R "tabs" "$ROOT/build/tabs"
   echo "copied tabs/ -> $ROOT/build/tabs ($(ls tabs | wc -l | tr -d ' ') files)"

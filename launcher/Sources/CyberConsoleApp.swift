@@ -3,22 +3,34 @@ import AppKit
 import UniformTypeIdentifiers
 
 enum Const {
-    static let appVersion = "1.5.0"
-    static let supportedGameVersion = "2.3.1"
-    static let defaultGame = "\(NSHomeDirectory())/Library/Application Support/Steam/steamapps/common/Cyberpunk 2077"
-    // Files copied from the app's Resources into <game>/red4ext/ on install. config.ini is REQUIRED - RED4ext
-    // reads [plugins] enabled=true from it; without it no plugins load. cyberpunk2077_addresses.json is its
-    // AddressLib. (TweakXL + ArchiveXL ship as vendored plugin DIRS - deployed separately, see install().)
-    static let payload = ["red4ext_hooks.js", "FridaGadget.config", "RED4ext.dylib",
-                          "FridaGadget.dylib", "libcyberconsole_overlay.dylib", "cet_catalog.tsv",
-                          "config.ini", "cyberpunk2077_addresses.json"]
-    // The names file is user data once they start creating, so it is seeded only when absent (never overwritten).
-    static let cmnPayload: [(res: String, dest: String, seedOnly: Bool)] = [
-        ("cybermodman_names.json",  "red4ext/cybermodman_names.json",        true),
-    ]
-    static let repo = "ysrdevs/nightcity-console-mac"
-    static let commandsURL = "https://github.com/ysrdevs/nightcity-console-mac/blob/main/docs/COMMANDS.md"
-    static let supportURL = "https://ko-fi.com/ysrdevs"
+    static let appVersion = "2.3.3.1"
+    static let supportedGameVersion = "2.3.3"
+    static let consoleOnly233 = true
+
+    // Files copied from the app bundle into <game>/red4ext/ on install.
+    static let payload = ["red4ext_hooks.js", "FridaGadget.config", "FridaGadget.dylib",
+                          "libcyberconsole_overlay.dylib", "cet_catalog.tsv"]
+    static let cmnPayload: [(res: String, dest: String, seedOnly: Bool)] = []
+
+    // Fork maintainers can set NCC_REPOSITORY_URL while building. Leaving it empty cleanly disables
+    // repository links and update checks instead of sending users to the wrong project's releases.
+    static var repositoryURL: URL? {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: "NCCRepositoryURL") as? String else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed.hasSuffix(".git") ? String(trimmed.dropLast(4)) : trimmed
+        return normalized.isEmpty ? nil : URL(string: normalized)
+    }
+
+    static var repositorySlug: String? {
+        guard let url = repositoryURL, url.host == "github.com" else { return nil }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        guard parts.count >= 2 else { return nil }
+        return "\(parts[0])/\(parts[1].replacingOccurrences(of: ".git", with: ""))"
+    }
+
+    static var commandsURL: URL? {
+        repositoryURL?.appendingPathComponent("blob/main/docs/COMMANDS.md")
+    }
 }
 
 final class Model: ObservableObject {
@@ -48,26 +60,73 @@ final class Model: ObservableObject {
     }
 
     init() {
-        gamePath = defaults.string(forKey: "gamePath") ?? Const.defaultGame
+        gamePath = Model.discoverGameRoot(savedPath: defaults.string(forKey: "gamePath"))
         refresh()
         checkForUpdates()
     }
 
+    static func normalizedGameRoot(_ path: String) -> String {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        if url.lastPathComponent.caseInsensitiveCompare("Cyberpunk2077.app") == .orderedSame {
+            return url.deletingLastPathComponent().path
+        }
+        return url.path
+    }
+
+    static func containsGame(_ path: String) -> Bool {
+        let root = normalizedGameRoot(path)
+        return FileManager.default.fileExists(atPath: "\(root)/Cyberpunk2077.app/Contents/MacOS/Cyberpunk2077")
+    }
+
+    static func discoverGameRoot(savedPath: String?) -> String {
+        if let configured = ProcessInfo.processInfo.environment["CP2077_DIR"], containsGame(configured) {
+            return normalizedGameRoot(configured)
+        }
+        if let savedPath, containsGame(savedPath) { return normalizedGameRoot(savedPath) }
+
+        var candidates = ["/Applications", "\(NSHomeDirectory())/Applications"]
+        if let volumes = try? FileManager.default.contentsOfDirectory(atPath: "/Volumes") {
+            for name in volumes where !name.hasPrefix(".") {
+                let volume = "/Volumes/\(name)"
+                candidates.append(volume)
+                candidates.append("\(volume)/Applications")
+            }
+        }
+        return candidates.first(where: containsGame) ?? "/Applications"
+    }
+
     var binaryPath: String { "\(gamePath)/Cyberpunk2077.app/Contents/MacOS/Cyberpunk2077" }
     var red4Dir: String { "\(gamePath)/red4ext" }
+    var installMarker: String { "\(red4Dir)/.night-city-menu-installed" }
+    var backupDir: String { "\(red4Dir)/.night-city-menu-backup" }
     var gameFound: Bool { FileManager.default.fileExists(atPath: binaryPath) }
 
-    // the three dylibs DYLD_INSERT_LIBRARIES will load (must all exist before launch)
-    var injectDylibs: [String] { ["RED4ext.dylib", "FridaGadget.dylib", "libcyberconsole_overlay.dylib"] }
+    // The two dylibs DYLD_INSERT_LIBRARIES will load (both must exist before launch).
+    var injectDylibs: [String] { ["FridaGadget.dylib", "libcyberconsole_overlay.dylib"] }
     func fullyInstalled() -> Bool {
         let fm = FileManager.default
-        let core = Const.payload.allSatisfy { fm.fileExists(atPath: "\(red4Dir)/\($0)") }
-        let tweakXL = fm.fileExists(atPath: "\(gamePath)/red4ext/plugins/TweakXL/TweakXL.dylib")
-        let archiveXL = fm.fileExists(atPath: "\(gamePath)/red4ext/plugins/ArchiveXL/ArchiveXL.dylib")
-        // scc (the redscript compiler) is required only when the app bundle actually ships it, so old
-        // installs self-heal via play()'s install() call without bricking dev builds that lack it.
-        let scc = sccResourcePath() == nil || fm.fileExists(atPath: sccGamePath)
-        return core && tweakXL && archiveXL && scc
+        return fm.fileExists(atPath: installMarker) &&
+               Const.payload.allSatisfy { fm.fileExists(atPath: "\(red4Dir)/\($0)") }
+    }
+
+    // Match the two 2.3.3 functions used by the console. Code-signing changes the whole-file hash,
+    // but it does not change these __TEXT bytes, so this remains valid after the launcher adds JIT
+    // entitlements. Refuse unknown binaries instead of injecting at stale addresses.
+    func isSupportedBinary() -> Bool {
+        guard readGameVersion() == Const.supportedGameVersion,
+              let h = try? FileHandle(forReadingFrom: URL(fileURLWithPath: binaryPath)) else { return false }
+        defer { try? h.close() }
+        let checks: [(UInt64, Data)] = [
+            (0x434E444, Data([0xFC,0x6F,0xBA,0xA9,0xFA,0x67,0x01,0xA9,0xF8,0x5F,0x02,0xA9,0xF6,0x57,0x03,0xA9])),
+            (0x4363898, Data([0x3B,0x02,0x00,0x14,0xF4,0x4F,0xBE,0xA9,0xFD,0x7B,0x01,0xA9,0xFD,0x43,0x00,0x91]))
+        ]
+        for (offset, expected) in checks {
+            do {
+                try h.seek(toOffset: offset)
+                guard try h.read(upToCount: expected.count) == expected else { return false }
+            } catch { return false }
+        }
+        return true
     }
 
     // MARK: - redscript (scc) integration
@@ -131,8 +190,9 @@ final class Model: ObservableObject {
     }
 
     func setGamePath(_ p: String) {
-        gamePath = p
-        defaults.set(p, forKey: "gamePath")
+        let root = Model.normalizedGameRoot(p)
+        gamePath = root
+        defaults.set(root, forKey: "gamePath")
         refresh()
     }
 
@@ -144,13 +204,15 @@ final class Model: ObservableObject {
             status = "Cyberpunk 2077 not found here - click Browse to locate it."
         } else {
             let v = gameVersion.map { " (v\($0))" } ?? ""
-            status = "Game found\(v)" + (installed ? " · NightCity Console installed" : " · not installed yet")
+            let compat = isSupportedBinary() ? " · compatible App Store build" : " · unsupported executable"
+            status = "Game found\(v)\(compat)" + (installed ? " · menu installed" : " · not installed yet")
         }
     }
 
     // Best-effort GitHub Releases check. Silent on any failure (offline, rate limit, parse error).
     func checkForUpdates() {
-        guard let url = URL(string: "https://api.github.com/repos/\(Const.repo)/releases/latest") else { return }
+        guard let slug = Const.repositorySlug,
+              let url = URL(string: "https://api.github.com/repos/\(slug)/releases/latest") else { return }
         var req = URLRequest(url: url, timeoutInterval: 8)
         req.setValue("nightcity-console-update-check", forHTTPHeaderField: "User-Agent")
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -159,7 +221,7 @@ final class Model: ObservableObject {
                   let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                   let tag = obj["tag_name"] as? String,
                   Model.isNewer(tag, than: Const.appVersion) else { return }
-            var dl = (obj["html_url"] as? String) ?? "https://github.com/\(Const.repo)/releases/latest"
+            var dl = (obj["html_url"] as? String) ?? "https://github.com/\(slug)/releases/latest"
             if let assets = obj["assets"] as? [[String: Any]] {
                 for a in assets where (a["name"] as? String)?.lowercased().hasSuffix(".dmg") == true {
                     if let u = a["browser_download_url"] as? String { dl = u; break }
@@ -197,18 +259,33 @@ final class Model: ObservableObject {
 
     func install() {
         guard gameFound else { status = "Game not found."; return }
+        guard isSupportedBinary() else {
+            status = "Install stopped: this launcher supports only your verified App Store 2.3.3 executable."
+            return
+        }
         guard let res = Bundle.main.resourceURL else { status = "Bundle resources missing."; return }
         needsDiskAccess = false
         let fm = FileManager.default
         do {
             try fm.createDirectory(atPath: red4Dir, withIntermediateDirectories: true)
+            let firstManagedInstall = !fm.fileExists(atPath: installMarker)
             for f in Const.payload {
                 let src = res.appendingPathComponent(f)
                 guard fm.fileExists(atPath: src.path) else { status = "Missing bundled file: \(f)"; return }
                 let dst = URL(fileURLWithPath: "\(red4Dir)/\(f)")
-                if fm.fileExists(atPath: dst.path) { try fm.removeItem(at: dst) }
+                if fm.fileExists(atPath: dst.path) {
+                    if firstManagedInstall {
+                        let backup = URL(fileURLWithPath: "\(backupDir)/\(f)")
+                        if !fm.fileExists(atPath: backup.path) {
+                            try fm.createDirectory(atPath: backupDir, withIntermediateDirectories: true)
+                            try fm.copyItem(at: dst, to: backup)
+                        }
+                    }
+                    try fm.removeItem(at: dst)
+                }
                 try fm.copyItem(at: src, to: dst)
             }
+            try Const.appVersion.write(toFile: installMarker, atomically: true, encoding: .utf8)
             // CyberModMan creator payload (seed names file)
             for item in Const.cmnPayload {
                 let src = res.appendingPathComponent(item.res)
@@ -223,17 +300,19 @@ final class Model: ObservableObject {
             // Vendored RED4ext plugins (TweakXL + ArchiveXL) - each is a self-contained folder (plugin dylib +
             // its Homebrew spdlog/fmt/yaml-cpp deps rebound to @loader_path). Deploy the whole folder so the
             // plugins load on a Mac with no Homebrew (the reason mods failed on a fresh machine).
-            let pluginsSrc = res.appendingPathComponent("plugins")
-            if let names = try? fm.contentsOfDirectory(atPath: pluginsSrc.path) {
-                for name in names where !name.hasPrefix(".") {
-                    let src = pluginsSrc.appendingPathComponent(name)
-                    let dstPath = "\(gamePath)/red4ext/plugins/\(name)"
-                    try fm.createDirectory(atPath: "\(gamePath)/red4ext/plugins", withIntermediateDirectories: true)
-                    if fm.fileExists(atPath: dstPath) { try fm.removeItem(atPath: dstPath) }
-                    try fm.copyItem(at: src, to: URL(fileURLWithPath: dstPath))
+            if !Const.consoleOnly233 {
+                let pluginsSrc = res.appendingPathComponent("plugins")
+                if let names = try? fm.contentsOfDirectory(atPath: pluginsSrc.path) {
+                    for name in names where !name.hasPrefix(".") {
+                        let src = pluginsSrc.appendingPathComponent(name)
+                        let dstPath = "\(gamePath)/red4ext/plugins/\(name)"
+                        try fm.createDirectory(atPath: "\(gamePath)/red4ext/plugins", withIntermediateDirectories: true)
+                        if fm.fileExists(atPath: dstPath) { try fm.removeItem(atPath: dstPath) }
+                        try fm.copyItem(at: src, to: URL(fileURLWithPath: dstPath))
+                    }
                 }
+                try deployScc()
             }
-            try deployScc()            // redscript compiler -> <game>/engine/tools/ (script-mod support)
             stripQuarantine(red4Dir)   // files we just wrote (incl. plugins/*) -> make dyld load them
             guard ensureGameEntitlements() else { return }   // status set on failure
             status = "Installed - click Play."
@@ -242,18 +321,18 @@ final class Model: ObservableObject {
             let msg = error.localizedDescription
             if looksLikePermissionError(msg) || gameOnExternalDrive {
                 needsDiskAccess = true
-                status = "Can't write to your game folder. It's on a second/external drive, which macOS blocks until you grant Full Disk Access. Open Privacy settings below, enable NightCity Console, then click Install again."
+                status = "Can't write to your game folder. It's on a second/external drive, which macOS blocks until you grant Full Disk Access. Open Privacy settings below, enable Night City Menu, then click Install again."
             } else {
                 status = "Install failed: \(msg)"
             }
         }
     }
 
-    // Stock Cyberpunk ships signed with only allow-dyld-environment-variables + disable-library-validation.
+    // Stock Cyberpunk ships without the JIT entitlements required by Frida.
     // Frida is a JIT: it writes machine code at runtime. Without allow-jit / allow-unsigned-executable-memory
     // the OS code-signing monitor SIGKILLs the game (CODESIGNING, Invalid Page) the instant Frida generates
-    // code. We re-sign the game binary ad-hoc with those entitlements. No SIP changes. Fully reversible:
-    // Steam "Verify integrity of game files" restores the original signature (and a later Play re-applies this).
+    // code. We re-sign the game binary ad-hoc with those entitlements. No SIP changes are required. Reinstalling
+    // the App Store game restores its original distribution signature.
     @discardableResult
     func ensureGameEntitlements() -> Bool {
         if gameHasJITEntitlement() { return true }   // already done; skip the (re)sign
@@ -284,7 +363,7 @@ final class Model: ObservableObject {
             let msg = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
             if looksLikePermissionError(msg) || gameOnExternalDrive {
                 needsDiskAccess = true
-                status = "Can't re-sign your game. It's on a second/external drive, which macOS blocks until you grant Full Disk Access. Open Privacy settings below, enable NightCity Console, then click Install again."
+                status = "Can't re-sign your game. It's on a second/external drive, which macOS blocks until you grant Full Disk Access. Open Privacy settings below, enable Night City Menu, then click Install again."
             } else {
                 status = "Re-signing the game failed: \(msg.trimmingCharacters(in: .whitespacesAndNewlines))"
             }
@@ -314,15 +393,26 @@ final class Model: ObservableObject {
 
     func uninstall() {
         let fm = FileManager.default
+        var restoreFailures: [String] = []
         for f in Const.payload {
             let p = "\(red4Dir)/\(f)"
             if fm.fileExists(atPath: p) { try? fm.removeItem(atPath: p) }
+            let backup = "\(backupDir)/\(f)"
+            if fm.fileExists(atPath: backup) {
+                do { try fm.copyItem(atPath: backup, toPath: p) }
+                catch { restoreFailures.append(f) }
+            }
         }
+        if restoreFailures.isEmpty && fm.fileExists(atPath: backupDir) { try? fm.removeItem(atPath: backupDir) }
+        if fm.fileExists(atPath: installMarker) { try? fm.removeItem(atPath: installMarker) }
         // also clear any wrapper left over from earlier builds
         let wrap = "\(red4Dir)/cyberconsole-launch.sh"
         if fm.fileExists(atPath: wrap) { try? fm.removeItem(atPath: wrap) }
-        status = "Uninstalled."
+        let result = restoreFailures.isEmpty
+            ? "Uninstalled. Any pre-existing menu files were restored."
+            : "Uninstalled, but these backups could not be restored: \(restoreFailures.joined(separator: ", ")). The backup folder was kept."
         refresh()
+        status = result
     }
 
     func stripQuarantine(_ path: String) {
@@ -343,13 +433,22 @@ final class Model: ObservableObject {
 
     func play() {
         guard gameFound else { status = "Game not found."; return }
+        guard isSupportedBinary() else {
+            status = "Launch stopped: the game executable does not match the verified App Store 2.3.3 build."
+            return
+        }
         guard !busy else { status = "Please wait for the current operation to finish."; return }
         if !fullyInstalled() { install() }   // self-heal stale/partial installs
         // pre-flight: every injected dylib must exist, or the game aborts on launch
         let fm = FileManager.default
         let missing = injectDylibs.filter { !fm.fileExists(atPath: "\(red4Dir)/\($0)") }
         guard missing.isEmpty else { status = "Can't launch - missing: \(missing.joined(separator: ", ")). Try Install again."; return }
-        guard ensureGameEntitlements() else { return }   // re-sign if a Steam verify/update reset it
+        guard ensureGameEntitlements() else { return }   // re-sign if an update or reinstall reset it
+
+        if Const.consoleOnly233 {
+            launchGame()
+            return
+        }
 
         // The mod handoffs live in /tmp, which macOS clears on reboot AND sweeps periodically (its tmp-reaper
         // deletes files untouched for ~3 days, no reboot required). They must exist at launch or mods degrade
@@ -415,26 +514,30 @@ final class Model: ObservableObject {
     }
 
     private func launchGame() {
-        ensureSteam()
+        if !Const.consoleOnly233 { ensureSteam() }
         // ALWAYS restore the macOS compatibility-layer enable-flags before launch. These live in /tmp and are
         // purged by macOS's periodic tmp-reaper (files unaccessed for ~3 days) even without a reboot. `regen`
         // recreates them, but it only runs when /tmp/cp2077_xl_items.txt is missing - so if the reaper purges
         // the flags but leaves that file, Regen is skipped and the flags stay gone -> the class-validator
         // relaxation (cp2077_bindpatch) is off -> the redscript binder rejects the graph -> SIGTRAP crash at
         // load with no menu. Creating them unconditionally here is immune to the Regen-skip logic.
-        for flag in ["cp2077_codeware_real", "cp2077_bindpatch", "cp2077_bindreject",
-                     "cp2077_binderr", "cp2077_reglog"] {
-            FileManager.default.createFile(atPath: "/tmp/\(flag)", contents: nil)
+        if !Const.consoleOnly233 {
+            for flag in ["cp2077_codeware_real", "cp2077_bindpatch", "cp2077_bindreject",
+                         "cp2077_binderr", "cp2077_reglog"] {
+                FileManager.default.createFile(atPath: "/tmp/\(flag)", contents: nil)
+            }
         }
         // Garment-hook ownership: with the gum gate armed below, RED4ext's manual inline hooks own the
         // garment functions - this flag tells the Frida gadget to step aside (same contract as
         // launch_red4ext_dynamic.sh). Without it the gadget would double-hook the same addresses.
-        FileManager.default.createFile(atPath: "/tmp/cp2077_red4ext_owns_garment", contents: nil)
-        let inject = "\(red4Dir)/RED4ext.dylib:\(red4Dir)/FridaGadget.dylib:\(red4Dir)/libcyberconsole_overlay.dylib"
+        if !Const.consoleOnly233 {
+            FileManager.default.createFile(atPath: "/tmp/cp2077_red4ext_owns_garment", contents: nil)
+        }
+        let inject = injectDylibs.map { "\(red4Dir)/\($0)" }.joined(separator: ":")
         var env = ProcessInfo.processInfo.environment
         env["DYLD_INSERT_LIBRARIES"] = inject
         env["DYLD_FORCE_FLAT_NAMESPACE"] = "1"
-        env["SteamAppId"] = "1091500"
+        if !Const.consoleOnly233 { env["SteamAppId"] = "1091500" }
         // Arm the RED4ext loader's hooking gate (manual inline hooks for simple-prologue targets). Without
         // these, every plugin hook (ArchiveXL garment fixes, Codeware's WidgetSpawningService = the
         // dynamic-widget render fix for Codeware UI mods) silently no-ops. Keep this offset list in sync
@@ -446,16 +549,18 @@ final class Model: ObservableObject {
         // service enabled: everything reported OK and no character ever arrived. When a correctly-mapped
         // hook appears to do nothing, CHECK THIS LIST FIRST:
         //   grep -o "registered at 0x[0-9a-f]*" <newest red4ext log>   -> those are the no-op'd ones.
-        env["RED4EXT_GUM_HOOKS"] = "scoped"
-        env["RED4EXT_GUM_HOOK_OFFSETS"] = "0x1704194,0xcc0710,0xe189f4,0xe16e68,0xe173fc,0xcb12bc,0x370d924,0x3710004,0xae6660,0xae3840,0x4965de0,0x4965ec0,0x4965980,0x4965b38,0x3d9a028,0x49799b8,0x49b888c,0x49a3084,0x47cf584,0x2197aac,0x4887524,0x49bded0"
-        env["RED4EXT_GUM_MANUAL_OFFSETS"] = "all"
+        if !Const.consoleOnly233 {
+            env["RED4EXT_GUM_HOOKS"] = "scoped"
+            env["RED4EXT_GUM_HOOK_OFFSETS"] = "0x1704194,0xcc0710,0xe189f4,0xe16e68,0xe173fc,0xcb12bc,0x370d924,0x3710004,0xae6660,0xae3840,0x4965de0,0x4965ec0,0x4965980,0x4965b38,0x3d9a028,0x49799b8,0x49b888c,0x49a3084,0x47cf584,0x2197aac,0x4887524,0x49bded0"
+            env["RED4EXT_GUM_MANUAL_OFFSETS"] = "all"
+        }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binaryPath)
         p.currentDirectoryURL = URL(fileURLWithPath: gamePath)
         p.environment = env
         do {
             try p.run()
-            status = "Launched - your mods load automatically. Press  `  or  F1  for the console."
+            status = "Launched. Load a save, then press  <  or  F1  for the 2.3.3 menu."
         } catch {
             status = "Launch failed: \(error.localizedDescription)"
         }
@@ -573,7 +678,7 @@ final class Model: ObservableObject {
     // takes seconds) so the window never beachballs; streams live progress into busyDetail.
     func installMod(from url: URL) {
         guard gameFound else { status = "Game not found."; return }
-        guard fullyInstalled() else { status = "Install NightCity Console first, then add mods."; return }
+        guard fullyInstalled() else { status = "Install Night City Menu first, then add mods."; return }
         guard nctoolPath() != nil else { status = "nctool helper missing from the app bundle."; return }
         guard !busy else { status = "Please wait for the current mod to finish installing."; return }
         let base = url.deletingPathExtension().lastPathComponent
@@ -673,13 +778,10 @@ struct ContentView: View {
         return m.gameFound && v != Const.supportedGameVersion
     }
 
-    // Steam installs always live under a "steamapps" path; anything else (e.g. GOG) is not supported yet.
-    var nonSteam: Bool { m.gameFound && !m.gamePath.contains("steamapps") }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("NightCity Console").font(.largeTitle.bold())
-            Text("In-game cheat console for Cyberpunk 2077 · macOS").foregroundColor(.secondary)
+            Text("Night City Menu 2.3.3").font(.largeTitle.bold())
+            Text("In-game command menu for the App Store build · macOS").foregroundColor(.secondary)
             Divider()
 
             if let ut = m.updateText {
@@ -720,53 +822,50 @@ struct ContentView: View {
             }
 
             if versionMismatch, let v = m.gameVersion {
-                Label("Detected game v\(v); NightCity Console targets v\(Const.supportedGameVersion). It may not work.",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout).foregroundColor(.orange)
-            }
-            if nonSteam {
-                Label("Only the Steam version is supported right now. GOG support is in progress.",
+                Label("Detected game v\(v); this release supports only v\(Const.supportedGameVersion).",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.callout).foregroundColor(.orange)
             }
 
             HStack(spacing: 12) {
-                Button(m.installed ? "Reinstall NightCity Console" : "Install") { m.install() }
+                Button(m.installed ? "Reinstall Menu" : "Install") { m.install() }
                     .disabled(!m.gameFound)
                 Button("Play  ▶") { m.play() }
                     .disabled(!m.installed || m.busy)
                     .keyboardShortcut(.defaultAction)
                 Spacer()
-                Button("Uninstall NightCity Console") { m.uninstall() }
+                Button("Uninstall Menu") { m.uninstall() }
                     .disabled(!m.installed)
             }
 
             if m.needsDiskAccess {
                 HStack(spacing: 10) {
                     Button("Open Privacy Settings") { m.openFullDiskAccess() }
-                    Text("Enable NightCity Console under Full Disk Access, then click Install again.")
+                    Text("Enable Night City Menu under Full Disk Access, then click Install again.")
                         .font(.caption).foregroundColor(.orange)
                 }
             }
 
-            Divider()
-            HStack {
-                Text("MODS").font(.caption2).foregroundColor(.secondary)
-                Spacer()
-                Button("Add Mod…") { addMod() }.disabled(!m.installed || m.busy)
+            if !Const.consoleOnly233 {
+                Divider()
+                HStack {
+                    Text("MODS").font(.caption2).foregroundColor(.secondary)
+                    Spacer()
+                    Button("Add Mod…") { addMod() }.disabled(!m.installed || m.busy)
+                }
+                modDropZone
+                modsList
             }
-            modDropZone
-            modsList
 
             Spacer()
             HStack {
                 Text(m.status).font(.callout).foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()
-                Link("Commands", destination: URL(string: Const.commandsURL)!)
-                Link("♥ Support", destination: URL(string: Const.supportURL)!)
+                if let commandsURL = Const.commandsURL { Link("Commands", destination: commandsURL) }
+                if let repositoryURL = Const.repositoryURL { Link("Source", destination: repositoryURL) }
             }
-            Text("Steam version only for now · GOG support in progress").font(.caption2).foregroundColor(.secondary)
+            Text("App Store 2.3.3 · exact executable signature checked before launch").font(.caption2).foregroundColor(.secondary)
             Text("Single-player only · back up your saves").font(.caption2).foregroundColor(.secondary)
         }
         .padding(22)
@@ -796,7 +895,7 @@ struct ContentView: View {
                 VStack(spacing: 3) {
                     Image(systemName: "tray.and.arrow.down").font(.title3).foregroundColor(.secondary)
                     Text("Drag a mod .zip or folder here").font(.callout).foregroundColor(.secondary)
-                    Text(m.installed ? "or click Add Mod above" : "install NightCity Console first")
+                    Text(m.installed ? "or click Add Mod above" : "install Night City Menu first")
                         .font(.caption2).foregroundColor(.secondary)
                 }
             }
@@ -858,10 +957,10 @@ struct ContentView: View {
     func browse() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
-        panel.canChooseFiles = false
+        panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Select"
-        panel.message = "Select your 'Cyberpunk 2077' folder"
+        panel.message = "Select Cyberpunk2077.app or the folder containing it"
         if panel.runModal() == .OK, let url = panel.url { m.setGamePath(url.path) }
     }
 }
@@ -869,7 +968,7 @@ struct ContentView: View {
 @main
 struct CyberConsoleApp: App {
     var body: some Scene {
-        WindowGroup("NightCity Console") {
+        WindowGroup("Night City Menu 2.3.3") {
             ContentView()
         }
     }

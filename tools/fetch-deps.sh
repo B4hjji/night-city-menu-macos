@@ -1,50 +1,59 @@
-#!/bin/bash
-# Populate deps/ with the third-party runtime binaries CyberConsole injects.
-# These are NOT committed to git (FridaGadget is ~57 MB). They are bundled into the
-# release .dmg at package time.
-#
-# Primary path: copy from a known-good local Cyberpunk 2077 install (if present).
-# Otherwise, download from upstream (see URLs below) and place the files in deps/.
-set -e
-cd "$(dirname "$0")/.."
-mkdir -p deps
-GAME="$HOME/Library/Application Support/Steam/steamapps/common/Cyberpunk 2077/red4ext"
+#!/usr/bin/env bash
+# Locate a user-supplied arm64 Frida Gadget and copy it into deps/.
+# Third-party binaries are intentionally not committed to this repository.
+set -euo pipefail
 
-copy_if() { [ -f "$1" ] && cp "$1" "deps/$(basename "$1")" && echo "  got $(basename "$1")"; }
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TARGET="$ROOT/deps/FridaGadget.dylib"
+mkdir -p "$ROOT/deps"
 
-echo "Fetching runtime deps into deps/ ..."
-if [ -d "$GAME" ]; then
-  echo "Found local install - copying from: $GAME"
-  copy_if "$GAME/RED4ext.dylib"
-  copy_if "$GAME/FridaGadget.dylib"
-  copy_if "$GAME/plugins/TweakXL/TweakXL.dylib"       # TweakXL creator engine (RED4ext plugin)
-  copy_if "$GAME/plugins/ArchiveXL/ArchiveXL.dylib"   # ArchiveXL content engine (RED4ext plugin) - REQUIRED for mods
-  copy_if "$GAME/config.ini"                          # RED4ext config ([plugins] enabled=true) - without it no plugins load
-  copy_if "$GAME/cyberpunk2077_addresses.json"        # RED4ext AddressLib
-fi
-
-# redscript compiler (jac3km4/redscript macOS arm64 release) - bundled so the app can compile .reds
-# script mods into r6/cache/final.redscripts before every launch. Canonical copy lives in the
-# cybermodman repo (extracted redscript-v0.5.31-macos.zip); fall back to the game's deployed copy.
-SCC_SRC="$HOME/cybermodman/redscript/engine/tools"
-[ -f "$SCC_SRC/scc" ] || SCC_SRC="$HOME/Library/Application Support/Steam/steamapps/common/Cyberpunk 2077/engine/tools"
-copy_if "$SCC_SRC/scc"
-copy_if "$SCC_SRC/libscc_lib.dylib"
-
-MISSING=0
-for f in RED4ext.dylib FridaGadget.dylib TweakXL.dylib ArchiveXL.dylib config.ini scc libscc_lib.dylib; do
-  [ -f "deps/$f" ] || { echo "  MISSING: deps/$f"; MISSING=1; }
-done
-
-if [ "$MISSING" = "1" ]; then
-  cat <<'EOF'
-
-Some deps are missing. Obtain them from upstream and drop into deps/:
-  - FridaGadget.dylib : frida-gadget (macOS arm64) from https://github.com/frida/frida/releases
-                        (download frida-gadget-<ver>-macos-arm64.dylib.gz, gunzip, rename to FridaGadget.dylib)
-  - RED4ext.dylib     : RED4ext macOS port release
-Then re-run this script (or just place the files and continue).
-EOF
+if [[ -f "$TARGET" ]]; then
+  if file "$TARGET" | grep -q 'arm64'; then
+    echo "Frida Gadget is already available: $TARGET"
+    exit 0
+  fi
+  echo "error: existing dependency does not contain an arm64 slice: $TARGET" >&2
   exit 1
 fi
-echo "deps ready."
+
+candidates=()
+[[ -n "${FRIDA_GADGET_SOURCE:-}" ]] && candidates+=("$FRIDA_GADGET_SOURCE")
+[[ -n "${CP2077_DIR:-}" ]] && candidates+=("$CP2077_DIR/red4ext/FridaGadget.dylib")
+candidates+=(
+  "/Applications/Night City Menu 2.3.3.app/Contents/Resources/FridaGadget.dylib"
+  "$HOME/Applications/Night City Menu 2.3.3.app/Contents/Resources/FridaGadget.dylib"
+)
+
+if [[ -d /Volumes ]]; then
+  while IFS= read -r volume; do
+    candidates+=("$volume/red4ext/FridaGadget.dylib")
+  done < <(find /Volumes -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null)
+fi
+
+for source in "${candidates[@]}"; do
+  if [[ -f "$source" ]]; then
+    if ! file "$source" | grep -q 'arm64'; then
+      echo "Skipping non-arm64 candidate: $source" >&2
+      continue
+    fi
+    cp "$source" "$TARGET"
+    echo "Copied Frida Gadget from: $source"
+    exit 0
+  fi
+done
+
+cat >&2 <<EOF
+FridaGadget.dylib was not found.
+
+Download the macOS arm64 Frida Gadget from the official Frida releases page,
+decompress it, and place it at:
+
+  $TARGET
+
+You can also point this script at an existing copy:
+
+  FRIDA_GADGET_SOURCE=/absolute/path/FridaGadget.dylib ./tools/fetch-deps.sh
+
+Official releases: https://github.com/frida/frida/releases
+EOF
+exit 1
